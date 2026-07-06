@@ -41,11 +41,11 @@ pub struct RoundtripDoc {
     pub format: crate::ir::DocumentFormat,
     /// Ruta original
     #[allow(dead_code)]
-    path: String,
+    pub path: String,
     /// Todas las partes del ZIP como raw bytes
-    parts: Vec<(String, Vec<u8>)>,
+    pub parts: Vec<(String, Vec<u8>)>,
     /// Índice de la parte principal (document.xml o content.xml)
-    main_part_index: Option<usize>,
+    pub main_part_index: Option<usize>,
 }
 
 impl RoundtripDoc {
@@ -123,6 +123,50 @@ impl RoundtripDoc {
             parts,
             main_part_index,
         })
+    }
+
+    /// Reemplazar texto en el IR y guardar con preservation.
+    /// Retorna la cantidad de reemplazos realizados.
+    pub fn replace_text_and_save(&mut self, old: &str, new: &str, path: impl AsRef<Path>) -> Result<usize> {
+        let mut count = 0;
+        for section in &mut self.ir.sections {
+            for element in &mut section.elements {
+                use crate::ir::Element;
+                match element {
+                    Element::Heading { text, .. } => {
+                        let before = text.clone();
+                        *text = text.replace(old, new);
+                        count += (before.len() - text.len()) / old.len();
+                    }
+                    Element::Paragraph { runs } => {
+                        for run in runs {
+                            let before = run.text.clone();
+                            run.text = run.text.replace(old, new);
+                            count += (before.len() - run.text.len()) / old.len();
+                        }
+                    }
+                    Element::List { items, .. } => {
+                        for item in items {
+                            let before = item.clone();
+                            *item = item.replace(old, new);
+                            count += (before.len() - item.len()) / old.len();
+                        }
+                    }
+                    Element::Table { rows } => {
+                        for row in rows {
+                            for cell in row {
+                                let before = cell.clone();
+                                *cell = cell.replace(old, new);
+                                count += (before.len() - cell.len()) / old.len();
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        self.save(path)?;
+        Ok(count)
     }
 
     /// Guardar el documento, regenerando solo la parte principal.

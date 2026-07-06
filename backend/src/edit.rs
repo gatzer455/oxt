@@ -8,7 +8,7 @@
 //! Estrategia: modificación directa del XML serializado.
 //! Simple, predecible, preserva el resto del paquete intacto.
 
-use std::io::{Read, Write};
+
 use std::path::Path;
 
 /// Error del módulo edit.
@@ -78,63 +78,59 @@ pub fn replace_text(path: impl AsRef<Path>, old: &str, new: &str) -> Result<Edit
         _ => return Err(EditError::UnsupportedFormat(ext)),
     };
 
-    // Leer el ZIP completo en memoria
-    let file = std::fs::File::open(path)?;
-    let mut archive = zip::ZipArchive::new(file)?;
+    // Usar RoundtripDoc para OOXML y ODF (preservation bag)
+    // Esto mantiene TODAS las partes intactas y solo regenera
+    // el contenido principal (document.xml / content.xml) desde el OxtIR.
+    let doc = crate::roundtrip::RoundtripDoc::open(path)
+        .map_err(|e| EditError::Other(format!("Error al abrir: {e}")))?;
 
-    // Recopilar todas las partes a modificar
-    let mut all_parts: Vec<String> = parts.iter().map(|s| s.to_string()).collect();
+    let mut ir = doc.ir.clone();
+    let mut replacements = 0;
 
-    if ext == "xlsx" {
-        // Agregar sheets dinámicamente
-        for i in 1..100 {
-            let name = format!("xl/worksheets/sheet{i}.xml");
-            if archive.by_name(&name).is_ok() {
-                all_parts.push(name);
-            } else {
-                break;
+    eprintln!("DEBUG: IR sections={}, plain={:?}", ir.sections.len(), ir.plain_text().chars().take(100).collect::<String>());
+
+    // Reemplazar texto en el OxtIR (recorre sections → elements → runs)
+    fn replace_in_ir(ir: &mut crate::ir::OxtIR, old: &str, new: &str) -> usize {
+        let mut count = 0;
+        for section in &mut ir.sections {
+            for element in &mut section.elements {
+                match element {
+                    crate::ir::Element::Heading { text, .. } => {
+                        let before = text.clone();
+                        *text = text.replace(old, new);
+                        count += before.matches(old).count();
+                    }
+                    crate::ir::Element::Paragraph { runs } => {
+                        for run in runs {
+                            let before = run.text.clone();
+                            run.text = run.text.replace(old, new);
+                            count += before.matches(old).count();
+                        }
+                    }
+                    crate::ir::Element::List { items, .. } => {
+                        for item in items {
+                            let before = item.clone();
+                            *item = item.replace(old, new);
+                            count += before.matches(old).count();
+                        }
+                    }
+                    crate::ir::Element::Table { rows } => {
+                        for row in rows {
+                            for cell in row {
+                                let before = cell.clone();
+                                *cell = cell.replace(old, new);
+                                count += before.matches(old).count();
+                            }
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
-    } else if ext == "pptx" {
-        // Agregar slides dinámicamente
-        for i in 1..100 {
-            let name = format!("ppt/slides/slide{i}.xml");
-            if archive.by_name(&name).is_ok() {
-                all_parts.push(name);
-            } else {
-                break;
-            }
-        }
+        count
     }
 
-    // Leer, modificar y guardar
-    let mut replacements: usize = 0;
-    let mut affected_parts = Vec::new();
-    let mut new_entries: Vec<(String, Vec<u8>)> = Vec::new();
-
-    for i in 0..archive.len() {
-        let mut entry = archive.by_index(i)?;
-        let name = entry.name().to_string();
-        let mut data = Vec::new();
-        entry.read_to_end(&mut data)?;
-
-        if all_parts.contains(&name) {
-            // Reemplazar solo dentro de <w:t>, <a:t>, <t> tags
-            let content = String::from_utf8_lossy(&data);
-            let modified = content.replace(old, new);
-
-            if modified != content {
-                let count = count_occurrences(&content, old);
-                replacements += count;
-                affected_parts.push(name.clone());
-                new_entries.push((name, modified.as_bytes().to_vec()));
-                continue;
-            }
-        }
-
-        new_entries.push((name, data));
-    }
-    drop(archive);
+    replacements = replace_in_ir(&mut ir, old, new);
 
     if replacements == 0 {
         return Ok(EditResult {
@@ -144,31 +140,27 @@ pub fn replace_text(path: impl AsRef<Path>, old: &str, new: &str) -> Result<Edit
         });
     }
 
-    // Escribir nuevo ZIP
-    let file = std::fs::File::create(path)?;
-    let mut writer = zip::ZipWriter::new(file);
-
-    let _options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-
-    for (name, data) in &new_entries {
-        let kind = if name.ends_with('/') {
-            zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)
-        } else {
-            zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated)
-        };
-        writer.start_file(name, kind)?;
-        writer.write_all(data)?;
-    }
-
-    writer.finish()?;
+    // Guardar con preservation bag (solo regenera el contenido principal)
+    // No podemos usar replace_text_and_save porque necesita &mut self
+    // y hemos movido `doc`. En su lugar, creamos un nuevo RoundtripDoc modificado.
+    let modified = crate::roundtrip::RoundtripDoc {
+        ir,
+        format: doc.format,
+        path: doc.path,
+        parts: doc.parts,
+        main_part_index: doc.main_part_index,
+    };
+    modified.save(path)
+        .map_err(|e| EditError::Other(format!("Error al guardar: {e}")))?;
 
     Ok(EditResult {
         path: path.to_string_lossy().to_string(),
         replacements,
-        affected_parts,
+        affected_parts: vec![format!("regenerado via OxtIR ({ext})")],
     })
 }
+
+
 
 /// Cuenta ocurrencias de un substring.
 fn count_occurrences(text: &str, pattern: &str) -> usize {
@@ -327,19 +319,17 @@ mod tests {
 
         zip.finish().unwrap();
 
-        // Probar reemplazo
+        // Probar reemplazo (ahora vía RoundtripDoc)
         let result = replace_text(&docx_path, "World", "oxt").unwrap();
         assert_eq!(result.replacements, 1);
-        assert!(result.affected_parts.contains(&"word/document.xml".to_string()));
+        assert!(result.affected_parts[0].contains("regenerado"),
+            "debe indicar regeneración, obtuve: {:?}", result.affected_parts);
 
-        // Verificar el contenido
-        let file = fs::File::open(&docx_path).unwrap();
-        let mut archive = zip::ZipArchive::new(file).unwrap();
-        let mut doc = archive.by_name("word/document.xml").unwrap();
-        let mut content = String::new();
-        doc.read_to_string(&mut content).unwrap();
-        assert!(content.contains("Hello oxt"));
-        assert!(!content.contains("Hello World"));
+        // Verificar el contenido vía Document::open
+        let doc = crate::Document::open(&docx_path).unwrap();
+        let text = doc.plain_text();
+        assert!(text.contains("Hello oxt"), "debe contener texto reemplazado, obtuve: {text:?}");
+        assert!(!text.contains("Hello World"), "no debe contener texto original");
 
         // Limpiar
         let _ = fs::remove_dir_all(&dir);
