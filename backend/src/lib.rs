@@ -19,6 +19,7 @@ pub mod docx;
 pub mod ir;
 pub mod opc;
 pub mod xlsx;
+pub mod edit;
 pub mod pptx;
 pub mod legacy;
 
@@ -43,6 +44,9 @@ pub enum Error {
 
     #[error("Legacy error: {0}")]
     Legacy(#[from] legacy::LegacyError),
+
+    #[error("Edit error: {0}")]
+    Edit(#[from] edit::EditError),
 
     #[error("OPC error: {0}")]
     Opc(#[from] opc::OpcError),

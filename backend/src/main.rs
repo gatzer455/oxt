@@ -38,6 +38,24 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+
+    /// Reemplazar texto en un documento.
+    Edit {
+        /// Ruta al archivo
+        path: String,
+
+        /// Texto a reemplazar
+        #[arg(long)]
+        old: String,
+
+        /// Texto nuevo
+        #[arg(long)]
+        new: String,
+
+        /// Salida como JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() {
@@ -65,6 +83,24 @@ fn main() {
                         _ => {
                             eprintln!("Formato no válido: {format}. Usa: text, markdown, ir, offset-map");
                             std::process::exit(1);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Command::Edit { path, old, new, json } => {
+            match oxt_backend::edit::replace_text(&path, &old, &new) {
+                Ok(result) => {
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                    } else {
+                        println!("Reemplazos: {}", result.replacements);
+                        if !result.affected_parts.is_empty() {
+                            println!("Partes afectadas: {}", result.affected_parts.join(", "));
                         }
                     }
                 }
