@@ -1,3 +1,4 @@
+#![allow(unused_variables)]
 //! oxt — CLI para documentos de oficina
 //! Lee, edita y crea documentos DOCX/XLSX/PPTX/ODF.
 //! Diseñado para ser usado por agentes LLM (pi).
@@ -44,6 +45,31 @@ enum GoogleCommand {
     DocsUpdate {
         /// ID del documento
         document_id: String,
+        /// Archivo JSON con el OxtIR
+        #[arg(long)]
+        from: String,
+    },
+
+    /// Leer un Google Sheet
+    #[command(name = "sheets:read")]
+    SheetsRead {
+        /// ID del spreadsheet
+        spreadsheet_id: String,
+        /// Formato de salida: text, markdown, ir
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Crear un Google Sheet
+    #[command(name = "sheets:create")]
+    SheetsCreate {
+        /// Título del spreadsheet
+        title: String,
+    },
+    /// Actualizar un Google Sheet desde un archivo IR
+    #[command(name = "sheets:update")]
+    SheetsUpdate {
+        /// ID del spreadsheet
+        spreadsheet_id: String,
         /// Archivo JSON con el OxtIR
         #[arg(long)]
         from: String,
@@ -151,6 +177,78 @@ fn handle_google(cmd: GoogleCommand) {
             {
                 match oxt_backend::google::create_doc(&title) {
                     Ok(id) => println!("Creado: https://docs.google.com/document/d/{id}"),
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            #[cfg(not(feature = "google"))]
+            {
+                eprintln!("Error: Google feature no habilitada");
+                std::process::exit(1);
+            }
+        }
+        GoogleCommand::SheetsRead { spreadsheet_id, format } => {
+            #[cfg(feature = "google")]
+            {
+                match oxt_backend::google::read_sheet(&spreadsheet_id) {
+                    Ok(ir) => {
+                        let output = match format.as_str() {
+                            "ir" => serde_json::to_string_pretty(&ir).unwrap_or_default(),
+                            "markdown" => ir.to_markdown(),
+                            _ => ir.plain_text(),
+                        };
+                        println!("{output}");
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            #[cfg(not(feature = "google"))]
+            {
+                eprintln!("Error: Google feature no habilitada");
+                std::process::exit(1);
+            }
+        }
+        GoogleCommand::SheetsCreate { title } => {
+            #[cfg(feature = "google")]
+            {
+                match oxt_backend::google::create_sheet(&title) {
+                    Ok(id) => println!("Creado: https://docs.google.com/spreadsheets/d/{id}"),
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            #[cfg(not(feature = "google"))]
+            {
+                eprintln!("Error: Google feature no habilitada");
+                std::process::exit(1);
+            }
+        }
+        GoogleCommand::SheetsUpdate { spreadsheet_id, from } => {
+            #[cfg(feature = "google")]
+            {
+                let json_data = match std::fs::read_to_string(&from) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!("Error leyendo {from}: {e}");
+                        std::process::exit(1);
+                    }
+                };
+                let ir: oxt_backend::ir::OxtIR = match serde_json::from_str(&json_data) {
+                    Ok(ir) => ir,
+                    Err(e) => {
+                        eprintln!("Error parseando IR: {e}");
+                        std::process::exit(1);
+                    }
+                };
+                match oxt_backend::google::write_sheet(&spreadsheet_id, &ir) {
+                    Ok(_) => println!("Sheet actualizado: {spreadsheet_id}"),
                     Err(e) => {
                         eprintln!("Error: {e}");
                         std::process::exit(1);

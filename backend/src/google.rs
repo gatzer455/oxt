@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables)]
 //! # Google Workspace — conector REST para Docs, Sheets y Slides
 //!
 //! Permite leer y escribir documentos de Google Workspace a través de la
@@ -179,7 +180,7 @@ fn save_tokens(tokens: &GoogleTokens) -> Result<()> {
 /// Crear una aplicación de escritorio con redirect URI: http://localhost:8080
 pub fn authenticate(client_id: &str, client_secret: &str) -> Result<AuthStatus> {
     use std::io::{Read, Write};
-    use std::net::{TcpListener, TcpStream};
+    use std::net::TcpListener;
 
     let redirect_port = 8080;
     let redirect_uri = format!("http://localhost:{redirect_port}");
@@ -708,6 +709,196 @@ pub fn create_doc(title: &str) -> Result<String> {
         .ok_or_else(|| GoogleError::Api("No documentId en respuesta".into()))?;
 
     Ok(doc_id.to_string())
+}
+
+
+// ── Google Sheets Reader ─────────────────────────────────────────────────────
+
+/// Leer un Google Sheet y devolverlo como OxtIR.
+/// Cada hoja (sheet) del documento se convierte en una Section con un Element::Table.
+#[cfg(feature = "google")]
+pub fn read_sheet(spreadsheet_id: &str) -> Result<crate::ir::OxtIR> {
+    use crate::ir::{Element, Metadata, Run, Section};
+
+    let tokens = load_tokens()?;
+    let url = format!(
+        "https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}?includeGridData=true"
+    );
+
+    let resp: serde_json::Value = ureq::get(&url)
+        .set("Authorization", &format!("Bearer {}", tokens.access_token))
+        .call()
+        .map_err(|e| GoogleError::Http(e.to_string()))?
+        .into_json()
+        .map_err(|e| GoogleError::Json(e))?;
+
+    let title = resp.get("properties")
+        .and_then(|p| p.get("title"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let mut sections: Vec<Section> = Vec::new();
+
+    if let Some(sheets) = resp.get("sheets").and_then(|s| s.as_array()) {
+        for sheet_entry in sheets {
+            let sheet_title = sheet_entry
+                .pointer("/properties/title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Sheet")
+                .to_string();
+
+            let mut rows: Vec<Vec<String>> = Vec::new();
+
+            if let Some(grid_data) = sheet_entry.get("data").and_then(|d| d.as_array()) {
+                for data in grid_data {
+                    if let Some(row_data) = data.get("rowData").and_then(|r| r.as_array()) {
+                        for row_entry in row_data {
+                            let mut row: Vec<String> = Vec::new();
+                            if let Some(values) = row_entry.get("values").and_then(|v| v.as_array()) {
+                                for cell in values {
+                                    let cell_text = cell
+                                        .pointer("/effectiveValue/stringValue")
+                                        .or_else(|| cell.pointer("/effectiveValue/numberValue"))
+                                        .and_then(|v| {
+                                            if let Some(s) = v.as_str() {
+                                                Some(s.to_string())
+                                            } else if let Some(n) = v.as_f64() {
+                                                if n == n.floor() {
+                                                    Some(format!("{}", n as i64))
+                                                } else {
+                                                    Some(format!("{n}"))
+                                                }
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .unwrap_or_default();
+                                    row.push(cell_text);
+                                }
+                            }
+                            // Skip empty rows
+                            if !row.is_empty() && row.iter().any(|c| !c.is_empty()) {
+                                rows.push(row);
+                            }
+                        }
+                    }
+                }
+            }
+
+            let elements = if rows.is_empty() {
+                vec![]
+            } else {
+                vec![Element::Table { rows }]
+            };
+
+            sections.push(Section {
+                title: Some(sheet_title),
+                elements,
+            });
+        }
+    }
+
+    let ir = crate::ir::OxtIR {
+        metadata: Metadata {
+            title,
+            subject: None,
+            creator: None,
+            page_count: None,
+            word_count: None,
+        },
+        sections,
+    };
+
+    Ok(ir)
+}
+
+/// Crear un nuevo Google Sheet en blanco.
+#[cfg(feature = "google")]
+pub fn create_sheet(title: &str) -> Result<String> {
+    let tokens = load_tokens()?;
+
+    let body = serde_json::json!({
+        "properties": { "title": title },
+    });
+
+    let resp: serde_json::Value = ureq::post("https://sheets.googleapis.com/v4/spreadsheets")
+        .set("Authorization", &format!("Bearer {}", tokens.access_token))
+        .set("Content-Type", "application/json")
+        .send_json(&body)
+        .map_err(|e| GoogleError::Http(e.to_string()))?
+        .into_json()
+        .map_err(|e| GoogleError::Json(e))?;
+
+    let sheet_id = resp.get("spreadsheetId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| GoogleError::Api("No spreadsheetId en respuesta".into()))?;
+
+    Ok(sheet_id.to_string())
+}
+
+/// Escribir contenido de un OxtIR a un Google Sheet existente.
+#[cfg(feature = "google")]
+pub fn write_sheet(spreadsheet_id: &str, ir: &crate::ir::OxtIR) -> Result<()> {
+    use crate::ir::Element;
+
+    let tokens = load_tokens()?;
+
+    let mut requests: Vec<serde_json::Value> = Vec::new();
+
+    // Google Sheets API usa updateCells para escribir datos
+    for (section_idx, section) in ir.sections.iter().enumerate() {
+        for element in &section.elements {
+            if let Element::Table { rows } = element {
+                // Construir filas para updateCells
+                let mut grid_rows: Vec<serde_json::Value> = Vec::new();
+                for row in rows {
+                    let mut values: Vec<serde_json::Value> = Vec::new();
+                    for cell in row {
+                        values.push(serde_json::json!({
+                            "userEnteredValue": {
+                                "stringValue": cell
+                            }
+                        }));
+                    }
+                    grid_rows.push(serde_json::json!({
+                        "values": values
+                    }));
+                }
+
+                requests.push(serde_json::json!({
+                    "updateCells": {
+                        "rows": grid_rows,
+                        "fields": "userEnteredValue",
+                        "start": {
+                            "sheetId": section_idx,
+                            "rowIndex": 0,
+                            "columnIndex": 0
+                        }
+                    }
+                }));
+            }
+        }
+    }
+
+    if requests.is_empty() {
+        return Ok(());
+    }
+
+    let body = serde_json::json!({ "requests": requests });
+
+    let url = format!(
+        "https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}:batchUpdate"
+    );
+
+    let _resp: serde_json::Value = ureq::post(&url)
+        .set("Authorization", &format!("Bearer {}", tokens.access_token))
+        .set("Content-Type", "application/json")
+        .send_json(&body)
+        .map_err(|e| GoogleError::Http(e.to_string()))?
+        .into_json()
+        .map_err(|e| GoogleError::Json(e))?;
+
+    Ok(())
 }
 
 #[cfg(test)]
