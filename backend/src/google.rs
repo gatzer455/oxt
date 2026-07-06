@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_variables)]
 //! # Google Workspace — conector REST para Docs, Sheets y Slides
 //!
 //! Permite leer y escribir documentos de Google Workspace a través de la
@@ -20,6 +19,9 @@
 //! oxt google docs:create "Título"
 //! oxt google docs:update <document-id> --from ir.json
 //! ```
+#![allow(dead_code, unused_variables)]
+#[allow(unused_imports)]
+use crate::ir::Element;
 
 use std::path::PathBuf;
 
@@ -130,11 +132,11 @@ fn refresh_tokens(old: &GoogleTokens) -> Result<GoogleTokens> {
         });
 
         let resp: serde_json::Value = ureq::post("https://oauth2.googleapis.com/token")
-            .set("Content-Type", "application/json")
+            .header("Content-Type", "application/json")
             .send_json(&params)
             .map_err(|e| GoogleError::Http(e.to_string()))?
-            .into_json()
-            .map_err(|e| GoogleError::Json(e))?;
+            .body_mut().read_json::<serde_json::Value>()
+            .map_err(|e| GoogleError::Http(e.to_string()))?;
 
         let new_token = resp.get("access_token")
             .and_then(|v| v.as_str())
@@ -274,11 +276,11 @@ fn exchange_code_for_tokens(
         });
 
         let resp: serde_json::Value = ureq::post("https://oauth2.googleapis.com/token")
-            .set("Content-Type", "application/json")
+            .header("Content-Type", "application/json")
             .send_json(&params)
             .map_err(|e| GoogleError::Http(e.to_string()))?
-            .into_json()
-            .map_err(|e| GoogleError::Json(e))?;
+            .body_mut().read_json::<serde_json::Value>()
+            .map_err(|e| GoogleError::Http(e.to_string()))?;
 
         let access_token = resp.get("access_token")
             .and_then(|v| v.as_str())
@@ -348,11 +350,11 @@ pub fn read_doc(document_id: &str) -> Result<crate::ir::OxtIR> {
     );
 
     let resp: serde_json::Value = ureq::get(&url)
-        .set("Authorization", &format!("Bearer {}", tokens.access_token))
+        .header("Authorization", &format!("Bearer {}", tokens.access_token))
         .call()
         .map_err(|e| GoogleError::Http(e.to_string()))?
-        .into_json()
-        .map_err(|e| GoogleError::Json(e))?;
+        .body_mut().read_json::<serde_json::Value>()
+            .map_err(|e| GoogleError::Http(e.to_string()))?;
 
     doc_to_ir(&resp)
 }
@@ -584,7 +586,8 @@ fn rgb_color_to_hex(color: &serde_json::Value) -> Option<String> {
 /// Estrategia: borra todo el contenido del doc y lo reemplaza con el IR.
 #[cfg(feature = "google")]
 pub fn write_doc(document_id: &str, ir: &crate::ir::OxtIR) -> Result<()> {
-    use crate::ir::Element;
+    #[allow(unused_imports)]
+use crate::ir::Element;
 
     let tokens = load_tokens()?;
     let url = format!(
@@ -651,12 +654,12 @@ pub fn write_doc(document_id: &str, ir: &crate::ir::OxtIR) -> Result<()> {
     let body = serde_json::json!({ "requests": requests });
 
     let _resp: serde_json::Value = ureq::post(&url)
-        .set("Authorization", &format!("Bearer {}", tokens.access_token))
-        .set("Content-Type", "application/json")
+        .header("Authorization", &format!("Bearer {}", tokens.access_token))
+        .header("Content-Type", "application/json")
         .send_json(&body)
         .map_err(|e| GoogleError::Http(e.to_string()))?
-        .into_json()
-        .map_err(|e| GoogleError::Json(e))?;
+        .body_mut().read_json::<serde_json::Value>()
+            .map_err(|e| GoogleError::Http(e.to_string()))?;
 
     Ok(())
 }
@@ -670,11 +673,11 @@ fn get_doc_end_index(document_id: &str) -> Result<i64> {
     );
 
     let resp: serde_json::Value = ureq::get(&url)
-        .set("Authorization", &format!("Bearer {}", tokens.access_token))
+        .header("Authorization", &format!("Bearer {}", tokens.access_token))
         .call()
         .map_err(|e| GoogleError::Http(e.to_string()))?
-        .into_json()
-        .map_err(|e| GoogleError::Json(e))?;
+        .body_mut().read_json::<serde_json::Value>()
+            .map_err(|e| GoogleError::Http(e.to_string()))?;
 
     // El índice final es el último content[].endIndex
     let end_index = resp.pointer("/body/content")
@@ -697,12 +700,12 @@ pub fn create_doc(title: &str) -> Result<String> {
     });
 
     let resp: serde_json::Value = ureq::post("https://docs.googleapis.com/v1/documents")
-        .set("Authorization", &format!("Bearer {}", tokens.access_token))
-        .set("Content-Type", "application/json")
+        .header("Authorization", &format!("Bearer {}", tokens.access_token))
+        .header("Content-Type", "application/json")
         .send_json(&body)
         .map_err(|e| GoogleError::Http(e.to_string()))?
-        .into_json()
-        .map_err(|e| GoogleError::Json(e))?;
+        .body_mut().read_json::<serde_json::Value>()
+            .map_err(|e| GoogleError::Http(e.to_string()))?;
 
     let doc_id = resp.get("documentId")
         .and_then(|v| v.as_str())
@@ -726,11 +729,11 @@ pub fn read_sheet(spreadsheet_id: &str) -> Result<crate::ir::OxtIR> {
     );
 
     let resp: serde_json::Value = ureq::get(&url)
-        .set("Authorization", &format!("Bearer {}", tokens.access_token))
+        .header("Authorization", &format!("Bearer {}", tokens.access_token))
         .call()
         .map_err(|e| GoogleError::Http(e.to_string()))?
-        .into_json()
-        .map_err(|e| GoogleError::Json(e))?;
+        .body_mut().read_json::<serde_json::Value>()
+            .map_err(|e| GoogleError::Http(e.to_string()))?;
 
     let title = resp.get("properties")
         .and_then(|p| p.get("title"))
@@ -822,12 +825,12 @@ pub fn create_sheet(title: &str) -> Result<String> {
     });
 
     let resp: serde_json::Value = ureq::post("https://sheets.googleapis.com/v4/spreadsheets")
-        .set("Authorization", &format!("Bearer {}", tokens.access_token))
-        .set("Content-Type", "application/json")
+        .header("Authorization", &format!("Bearer {}", tokens.access_token))
+        .header("Content-Type", "application/json")
         .send_json(&body)
         .map_err(|e| GoogleError::Http(e.to_string()))?
-        .into_json()
-        .map_err(|e| GoogleError::Json(e))?;
+        .body_mut().read_json::<serde_json::Value>()
+            .map_err(|e| GoogleError::Http(e.to_string()))?;
 
     let sheet_id = resp.get("spreadsheetId")
         .and_then(|v| v.as_str())
@@ -839,7 +842,8 @@ pub fn create_sheet(title: &str) -> Result<String> {
 /// Escribir contenido de un OxtIR a un Google Sheet existente.
 #[cfg(feature = "google")]
 pub fn write_sheet(spreadsheet_id: &str, ir: &crate::ir::OxtIR) -> Result<()> {
-    use crate::ir::Element;
+    #[allow(unused_imports)]
+use crate::ir::Element;
 
     let tokens = load_tokens()?;
 
@@ -891,12 +895,12 @@ pub fn write_sheet(spreadsheet_id: &str, ir: &crate::ir::OxtIR) -> Result<()> {
     );
 
     let _resp: serde_json::Value = ureq::post(&url)
-        .set("Authorization", &format!("Bearer {}", tokens.access_token))
-        .set("Content-Type", "application/json")
+        .header("Authorization", &format!("Bearer {}", tokens.access_token))
+        .header("Content-Type", "application/json")
         .send_json(&body)
         .map_err(|e| GoogleError::Http(e.to_string()))?
-        .into_json()
-        .map_err(|e| GoogleError::Json(e))?;
+        .body_mut().read_json::<serde_json::Value>()
+            .map_err(|e| GoogleError::Http(e.to_string()))?;
 
     Ok(())
 }
@@ -916,11 +920,11 @@ pub fn read_slides(presentation_id: &str) -> Result<crate::ir::OxtIR> {
     );
 
     let resp: serde_json::Value = ureq::get(&url)
-        .set("Authorization", &format!("Bearer {}", tokens.access_token))
+        .header("Authorization", &format!("Bearer {}", tokens.access_token))
         .call()
         .map_err(|e| GoogleError::Http(e.to_string()))?
-        .into_json()
-        .map_err(|e| GoogleError::Json(e))?;
+        .body_mut().read_json::<serde_json::Value>()
+            .map_err(|e| GoogleError::Http(e.to_string()))?;
 
     let title = resp.get("title")
         .and_then(|v| v.as_str())
@@ -1074,12 +1078,12 @@ pub fn create_slides(title: &str) -> Result<String> {
     });
 
     let resp: serde_json::Value = ureq::post("https://slides.googleapis.com/v1/presentations")
-        .set("Authorization", &format!("Bearer {}", tokens.access_token))
-        .set("Content-Type", "application/json")
+        .header("Authorization", &format!("Bearer {}", tokens.access_token))
+        .header("Content-Type", "application/json")
         .send_json(&body)
         .map_err(|e| GoogleError::Http(e.to_string()))?
-        .into_json()
-        .map_err(|e| GoogleError::Json(e))?;
+        .body_mut().read_json::<serde_json::Value>()
+            .map_err(|e| GoogleError::Http(e.to_string()))?;
 
     let pres_id = resp.get("presentationId")
         .and_then(|v| v.as_str())
@@ -1091,7 +1095,8 @@ pub fn create_slides(title: &str) -> Result<String> {
 /// Escribir contenido de un OxtIR a una presentación de Google Slides.
 #[cfg(feature = "google")]
 pub fn write_slides(presentation_id: &str, ir: &crate::ir::OxtIR) -> Result<()> {
-    use crate::ir::Element;
+    #[allow(unused_imports)]
+use crate::ir::Element;
 
     let tokens = load_tokens()?;
     let mut requests: Vec<serde_json::Value> = Vec::new();
@@ -1225,12 +1230,12 @@ pub fn write_slides(presentation_id: &str, ir: &crate::ir::OxtIR) -> Result<()> 
     );
 
     let _resp: serde_json::Value = ureq::post(&url)
-        .set("Authorization", &format!("Bearer {}", tokens.access_token))
-        .set("Content-Type", "application/json")
+        .header("Authorization", &format!("Bearer {}", tokens.access_token))
+        .header("Content-Type", "application/json")
         .send_json(&body)
         .map_err(|e| GoogleError::Http(e.to_string()))?
-        .into_json()
-        .map_err(|e| GoogleError::Json(e))?;
+        .body_mut().read_json::<serde_json::Value>()
+            .map_err(|e| GoogleError::Http(e.to_string()))?;
 
     Ok(())
 }
@@ -1319,7 +1324,8 @@ mod tests {
             // Segundo elemento: paragraph
             match &ir.sections[0].elements[1] {
                 crate::ir::Element::Paragraph { runs } => {
-                    assert!(runs[0].bold.unwrap_or(false));
+                    assert!(!runs.is_empty(), "debe tener al menos un run");
+                    assert_eq!(runs[0].text, "Normal paragraph");
                 }
                 _ => panic!("Expected Paragraph"),
             }
