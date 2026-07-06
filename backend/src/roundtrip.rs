@@ -323,16 +323,14 @@ impl RoundtripDoc {
                     }
                 }
 
-                let mut ss = String::from(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+                let uniq = all_strings.len();
+                let mut ss = format!(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-     count="UNIQ" uniqueCount="UNIQ">"#);
+     count="{uniq}" uniqueCount="{uniq}">"#);
                 for s in &all_strings {
                     ss.push_str(&format!("<si><t>{}</t></si>", Self::escape_xml(s)));
                 }
                 ss.push_str("</sst>");
-                // Reemplazar UNIQ con el count real
-                let uniq = all_strings.len();
-                let ss = ss.replace("UNIQ", &uniq.to_string());
                 map.insert("xl/sharedStrings.xml".to_string(), ss);
 
                 // Regenerar xl/worksheets/sheetN.xml para cada sección
