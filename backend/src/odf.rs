@@ -101,7 +101,7 @@ impl OdfReader {
         Ok(data)
     }
 
-    fn parse_content(xml: &str, fmt: &DocumentFormat) -> Result<Vec<Element>> {
+    fn parse_content(xml: &str, _fmt: &DocumentFormat) -> Result<Vec<Element>> {
         let mut reader = Reader::from_str(xml);
         reader.config_mut().expand_empty_elements = true;
         reader.config_mut().trim_text(false);

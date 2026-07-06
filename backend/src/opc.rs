@@ -4,7 +4,7 @@
 //! las convenciones OPC: [Content_Types].xml + .rels para relaciones.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read, Seek};
+use std::io::{BufReader, Read, Seek};
 use std::path::Path;
 
 use quick_xml::events::Event;

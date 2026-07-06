@@ -1,3 +1,4 @@
+#![allow(unused_assignments, unused_variables)]
 //! # DOCX Reader
 //!
 //! Parsea un archivo .docx → OxtIR.
@@ -21,12 +22,11 @@ use std::collections::HashMap;
 
 use crate::ir::*;
 use crate::opc::OpcPackage;
-const NS_W: &[u8] = b"http://schemas.openxmlformats.org/wordprocessingml/2006/main";
-const NS_R: &[u8] = b"http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 /// Un estilo de párrafo (de styles.xml).
 struct StyleEntry {
     style_id: String,
     based_on: Option<String>,
+    #[allow(dead_code)]
     style_type: String,
     heading_level: Option<u8>,
 }
@@ -215,7 +215,7 @@ impl DocxReader {
         let mut buf = Vec::new();
 
         // numId → ordered (true = numerada, false = bullets)
-        let mut num_map = HashMap::new();
+        let num_map = HashMap::new();
         let mut current_num_id: Option<u32> = None;
         let mut current_abstract_num_id: Option<u32> = None;
         let mut abstract_num_map: HashMap<u32, bool> = HashMap::new();
@@ -312,9 +312,9 @@ impl DocxReader {
         let mut table_row: Vec<String> = Vec::new();
         let mut cell_text = String::new();
 
-        let mut list_items: Vec<String> = Vec::new();
-        let mut in_list = false;
-        let mut list_ordered = false;
+        let list_items: Vec<String> = Vec::new();
+        let in_list = false;
+        let list_ordered = false;
 
         loop {
             match reader.read_event_into(&mut buf) {
