@@ -365,7 +365,7 @@ impl RoundtripDoc {
                     }
                     ws.push_str("</sheetData></worksheet>");
 
-                    map.insert(format!("xl/worksheets/sheet{}.xml", i + 1), ws);
+                    map.insert(format!("xl/worksheets/sheet{}.xml", i), ws);
                 }
             }
 
