@@ -23,6 +23,7 @@ pub mod create;
 pub mod edit;
 pub mod pptx;
 pub mod legacy;
+pub mod odf;
 
 use std::path::Path;
 
@@ -51,6 +52,9 @@ pub enum Error {
 
     #[error("Create error: {0}")]
     Create(#[from] create::CreateError),
+
+    #[error("ODF error: {0}")]
+    Odf(#[from] odf::OdfError),
 
     #[error("OPC error: {0}")]
     Opc(#[from] opc::OpcError),
@@ -102,9 +106,8 @@ impl Document {
                 reader.into_ir()
             }
             DocumentFormat::Odt | DocumentFormat::Ods | DocumentFormat::Odp => {
-                return Err(Error::UnsupportedFormat(format!(
-                    "{}: ODF no implementado aún", fmt
-                )));
+                let reader = odf::OdfReader::open(path)?;
+                reader.into_ir()
             }
         };
 
