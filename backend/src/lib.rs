@@ -24,6 +24,7 @@ pub mod edit;
 pub mod pptx;
 pub mod legacy;
 pub mod odf;
+pub mod roundtrip;
 
 use std::path::Path;
 
@@ -55,6 +56,9 @@ pub enum Error {
 
     #[error("ODF error: {0}")]
     Odf(#[from] odf::OdfError),
+
+    #[error("Roundtrip error: {0}")]
+    Roundtrip(#[from] roundtrip::RoundtripError),
 
     #[error("OPC error: {0}")]
     Opc(#[from] opc::OpcError),

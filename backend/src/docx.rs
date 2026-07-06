@@ -302,6 +302,7 @@ impl DocxReader {
         let mut in_hyperlink = false;
         let mut in_break = false;
         let mut in_pstyle = false;
+        let mut in_rpr = false;
 
         let mut current_runs: Vec<Run> = Vec::new();
         let mut current_run: Option<Run> = None;
@@ -339,7 +340,7 @@ impl DocxReader {
                             current_run = Some(Run::plain(""));
                             link_id = None;
                         }
-                        "rPr" if in_run => {}
+                        "rPr" if in_run => in_rpr = true,
                         "t" if in_run => in_text = true,
                         "br" if in_run => in_break = true,
                         "hyperlink" if in_paragraph => {
@@ -347,6 +348,59 @@ impl DocxReader {
                             link_id = e.try_get_attribute("r:id").ok().flatten()
                                 .or_else(|| e.try_get_attribute("id").ok().flatten())
                                 .map(|a| String::from_utf8_lossy(&a.value).to_string());
+                        }
+                        "b" if in_rpr => {
+                            if let Some(ref mut run) = current_run {
+                                run.bold = Some(true);
+                            }
+                        }
+                        "i" if in_rpr => {
+                            if let Some(ref mut run) = current_run {
+                                run.italic = Some(true);
+                            }
+                        }
+                        "u" if in_rpr => {
+                            if let Some(ref mut run) = current_run {
+                                run.underline = Some(true);
+                            }
+                        }
+                        "strike" if in_rpr => {
+                            // w:strike o w:dstrike
+                            if let Some(ref mut run) = current_run {
+                                run.strikethrough = Some(true);
+                            }
+                        }
+                        "sz" if in_rpr => {
+                            // w:sz w:val="24" → font_size en half-points
+                            if let Some(ref mut run) = current_run {
+                                if let Some(attr) = e.try_get_attribute("w:val").ok().flatten() {
+                                    if let Ok(v) = std::str::from_utf8(&attr.value) {
+                                        if let Ok(n) = v.parse::<f32>() {
+                                            run.font_size = Some(n);
+                                        }
+                                    }
+                                } else if let Some(attr) = e.try_get_attribute("val").ok().flatten() {
+                                    if let Ok(v) = std::str::from_utf8(&attr.value) {
+                                        if let Ok(n) = v.parse::<f32>() {
+                                            run.font_size = Some(n);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        "color" if in_rpr => {
+                            // w:color w:val="FF0000"
+                            if let Some(ref mut run) = current_run {
+                                if let Some(attr) = e.try_get_attribute("w:val").ok().flatten() {
+                                    if let Ok(v) = std::str::from_utf8(&attr.value) {
+                                        run.color = Some(v.to_string());
+                                    }
+                                } else if let Some(attr) = e.try_get_attribute("val").ok().flatten() {
+                                    if let Ok(v) = std::str::from_utf8(&attr.value) {
+                                        run.color = Some(v.to_string());
+                                    }
+                                }
+                            }
                         }
                         "tbl" if !in_table => {
                             in_table = true;
@@ -430,7 +484,7 @@ impl DocxReader {
                             in_run = false;
                             in_break = false;
                         }
-                        "rPr" => {}
+                        "rPr" => in_rpr = false,
                         "t" => in_text = false,
                         "hyperlink" => in_hyperlink = false,
                         "tbl" => {

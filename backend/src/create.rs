@@ -158,7 +158,9 @@ fn write_docx_paragraph<W: Write>(w: &mut W, runs: &[Run], bold: Option<bool>) -
     for run in runs {
         write!(w, "<w:r>")?;
 
-        let has_format = run.bold.unwrap_or(false) || run.italic.unwrap_or(false);
+        let has_format = run.bold.unwrap_or(false) || run.italic.unwrap_or(false)
+            || run.underline.unwrap_or(false) || run.strikethrough.unwrap_or(false)
+            || run.font_size.is_some() || run.color.is_some();
         if has_format {
             write!(w, "<w:rPr>")?;
             if run.bold.unwrap_or(false) {
@@ -166,6 +168,18 @@ fn write_docx_paragraph<W: Write>(w: &mut W, runs: &[Run], bold: Option<bool>) -
             }
             if run.italic.unwrap_or(false) {
                 write!(w, r#"<w:i/>"#)?;
+            }
+            if run.underline.unwrap_or(false) {
+                write!(w, r#"<w:u/>"#)?;
+            }
+            if run.strikethrough.unwrap_or(false) {
+                write!(w, r#"<w:strike/>"#)?;
+            }
+            if let Some(sz) = run.font_size {
+                write!(w, r#"<w:sz w:val="{sz}"/>"#)?;
+            }
+            if let Some(ref color) = run.color {
+                write!(w, r#"<w:color w:val="{color}"/>"#)?;
             }
             write!(w, "</w:rPr>")?;
         }
