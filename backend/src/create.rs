@@ -661,8 +661,6 @@ fn write_escaped<W: Write>(w: &mut W, text: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::*;
-    use std::io::Read;
 
     #[test]
     fn test_escape() {
@@ -673,8 +671,6 @@ mod tests {
 
     #[test]
     fn test_create_docx_roundtrip() {
-        use std::io::Read;
-
         let ir = OxtIR {
             metadata: Metadata::default(),
             sections: vec![
@@ -718,6 +714,8 @@ mod tests {
 
     #[test]
     fn test_create_odt_roundtrip() {
+        use std::io::Read;
+
         let ir = OxtIR {
             metadata: Metadata::default(),
             sections: vec![
@@ -766,8 +764,6 @@ mod tests {
 
     #[test]
     fn test_create_legacy_doc_roundtrip() {
-        use std::io::Read;
-
         let ir = OxtIR {
             metadata: Metadata::default(),
             sections: vec![

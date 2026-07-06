@@ -148,7 +148,7 @@ pub fn replace_text(path: impl AsRef<Path>, old: &str, new: &str) -> Result<Edit
         format: doc.format,
         path: doc.path,
         parts: doc.parts,
-        main_part_index: doc.main_part_index,
+        regenerated_indices: doc.regenerated_indices,
     };
     modified.save(path)
         .map_err(|e| EditError::Other(format!("Error al guardar: {e}")))?;
@@ -338,8 +338,6 @@ mod tests {
 
     #[test]
     fn test_edit_legacy_doc_converts_to_docx() {
-        use std::io::Read;
-
         let dir = std::env::temp_dir().join("oxt_test_legacy_edit");
         let _ = std::fs::create_dir_all(&dir);
         let doc_path = dir.join("test_legacy.doc");
