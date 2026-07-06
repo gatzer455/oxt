@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 /// Representación unificada de un documento completo.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OxtIR {
+    #[serde(default)]
     pub metadata: Metadata,
     pub sections: Vec<Section>,
 }
