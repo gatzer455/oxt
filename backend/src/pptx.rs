@@ -1,6 +1,6 @@
 //! # PPTX Reader
 //!
-//! Parsea un archivo .pptx → XiIR.
+//! Parsea un archivo .pptx → OxtIR.
 //!
 //! Un PPTX es un ZIP con:
 //!   - ppt/presentation.xml    → lista de diapositivas
@@ -43,7 +43,7 @@ struct SlideInfo {
 
 /// PPTX parseado.
 pub struct PptxReader {
-    ir: XiIR,
+    ir: OxtIR,
 }
 
 impl PptxReader {
@@ -83,7 +83,7 @@ impl PptxReader {
             });
         }
 
-        let ir = XiIR {
+        let ir = OxtIR {
             metadata: Metadata::default(),
             sections,
         };
@@ -92,7 +92,7 @@ impl PptxReader {
     }
 
     /// Consumir y devolver el IR.
-    pub fn into_ir(self) -> XiIR {
+    pub fn into_ir(self) -> OxtIR {
         self.ir
     }
 

@@ -1,4 +1,4 @@
-//! # XiIR — Intermediate Representation unificado
+//! # OxtIR — Intermediate Representation unificado
 //!
 //! Este es el contrato entre el documento físico y el LLM.
 //! Todo formato (DOCX, XLSX, PPTX, ODT…) se reduce a esta representación.
@@ -6,11 +6,11 @@
 
 use serde::{Deserialize, Serialize};
 
-// ── XiIR ─────────────────────────────────────────────────────────────────────
+// ── OxtIR ─────────────────────────────────────────────────────────────────────
 
 /// Representación unificada de un documento completo.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct XiIR {
+pub struct OxtIR {
     pub metadata: Metadata,
     pub sections: Vec<Section>,
 }
@@ -207,7 +207,7 @@ impl std::fmt::Display for DocumentFormat {
 
 // ── Rendering helpers ─────────────────────────────────────────────────────────
 
-impl XiIR {
+impl OxtIR {
     /// Renderizar a texto plano (pérdida de formato).
     pub fn plain_text(&self) -> String {
         let mut out = String::new();
@@ -462,7 +462,7 @@ mod tests {
 
     #[test]
     fn test_ir_to_plain_text() {
-        let ir = XiIR {
+        let ir = OxtIR {
             metadata: Metadata::default(),
             sections: vec![Section {
                 title: None,
@@ -479,7 +479,7 @@ mod tests {
 
     #[test]
     fn test_ir_to_markdown() {
-        let ir = XiIR {
+        let ir = OxtIR {
             metadata: Metadata::default(),
             sections: vec![Section {
                 title: None,
@@ -502,7 +502,7 @@ mod tests {
 
     #[test]
     fn test_offset_map() {
-        let ir = XiIR {
+        let ir = OxtIR {
             metadata: Metadata::default(),
             sections: vec![Section {
                 title: None,

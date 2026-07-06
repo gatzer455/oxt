@@ -10,7 +10,7 @@ use std::path::Path;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
-use crate::ir::{DocumentFormat, Element, Metadata, Run, Section, XiIR};
+use crate::ir::{DocumentFormat, Element, Metadata, Run, Section, OxtIR};
 
 #[derive(Debug, thiserror::Error)]
 pub enum OdfError {
@@ -37,7 +37,7 @@ pub type Result<T> = std::result::Result<T, OdfError>;
 
 /// Lector de documentos ODF.
 pub struct OdfReader {
-    ir: XiIR,
+    ir: OxtIR,
 }
 
 impl OdfReader {
@@ -79,7 +79,7 @@ impl OdfReader {
         let content_xml = Self::read_string(&mut archive, "content.xml")?;
         let elements = Self::parse_content(&content_xml, &fmt)?;
 
-        let ir = XiIR {
+        let ir = OxtIR {
             metadata: Metadata::default(),
             sections: vec![Section { title: None, elements }],
         };
@@ -88,7 +88,7 @@ impl OdfReader {
     }
 
     /// Consumir y devolver el IR.
-    pub fn into_ir(self) -> XiIR {
+    pub fn into_ir(self) -> OxtIR {
         self.ir
     }
 

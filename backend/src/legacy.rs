@@ -34,7 +34,7 @@ pub type Result<T> = std::result::Result<T, LegacyError>;
 
 /// Legacy parseado.
 pub struct LegacyReader {
-    ir: XiIR,
+    ir: OxtIR,
 }
 
 impl LegacyReader {
@@ -65,7 +65,7 @@ impl LegacyReader {
             _ => return Err(LegacyError::UnknownFormat),
         };
 
-        let ir = XiIR {
+        let ir = OxtIR {
             metadata: Metadata::default(),
             sections: vec![Section {
                 title: Some(title.into()),
@@ -77,7 +77,7 @@ impl LegacyReader {
     }
 
     /// Consumir y devolver el IR.
-    pub fn into_ir(self) -> XiIR {
+    pub fn into_ir(self) -> OxtIR {
         self.ir
     }
 }

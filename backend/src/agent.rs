@@ -30,7 +30,7 @@ pub struct ReadOutput {
 }
 
 impl ReadOutput {
-    pub fn from_ir(ir: &XiIR, format: &str) -> Self {
+    pub fn from_ir(ir: &OxtIR, format: &str) -> Self {
         let element_count: usize = ir.sections.iter()
             .map(|s| s.elements.len())
             .sum();

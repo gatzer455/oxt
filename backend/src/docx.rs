@@ -1,6 +1,6 @@
 //! # DOCX Reader
 //!
-//! Parsea un archivo .docx → XiIR.
+//! Parsea un archivo .docx → OxtIR.
 //!
 //! Un DOCX es un ZIP con:
 //!   - word/document.xml   → cuerpo del documento
@@ -52,7 +52,7 @@ pub type Result<T> = std::result::Result<T, DocxError>;
 
 /// DOCX parseado.
 pub struct DocxReader {
-    ir: XiIR,
+    ir: OxtIR,
 }
 
 impl DocxReader {
@@ -73,7 +73,7 @@ impl DocxReader {
         let body_xml = pkg.read_string("word/document.xml")?;
         let elements = Self::parse_body(&body_xml, &styles, &numbering)?;
 
-        let ir = XiIR {
+        let ir = OxtIR {
             metadata: Metadata::default(),
             sections: vec![Section {
                 title: None,
@@ -85,7 +85,7 @@ impl DocxReader {
     }
 
     /// Consumir y devolver el IR.
-    pub fn into_ir(self) -> XiIR {
+    pub fn into_ir(self) -> OxtIR {
         self.ir
     }
 

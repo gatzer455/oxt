@@ -1,7 +1,7 @@
 //! # oxt — motor minimalista para documentos de oficina
 //!
 //! Backend que transforma documentos DOCX/XLSX/PPTX/ODF en un IR unificado
-//! (XiIR) que los LLMs pueden leer y manipular.
+//! (OxtIR) que los LLMs pueden leer y manipular.
 //!
 //! ## Uso básico
 //!
@@ -27,7 +27,7 @@ pub mod odf;
 
 use std::path::Path;
 
-use ir::{DocumentFormat, XiIR};
+use ir::{DocumentFormat, OxtIR};
 
 /// Error unificado del backend.
 #[derive(Debug, thiserror::Error)]
@@ -71,7 +71,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Un documento de oficina abierto (cualquier formato soportado).
 pub struct Document {
     format: DocumentFormat,
-    ir: XiIR,
+    ir: OxtIR,
     path: String,
 }
 
@@ -119,12 +119,12 @@ impl Document {
     }
 
     /// Obtener el IR del documento.
-    pub fn to_ir(&self) -> &XiIR {
+    pub fn to_ir(&self) -> &OxtIR {
         &self.ir
     }
 
     /// Consumir el documento y devolver el IR.
-    pub fn into_ir(self) -> XiIR {
+    pub fn into_ir(self) -> OxtIR {
         self.ir
     }
 

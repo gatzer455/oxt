@@ -66,6 +66,9 @@ pub fn replace_text(path: impl AsRef<Path>, old: &str, new: &str) -> Result<Edit
         "pptx" => &[
             // slides se detectan dinámicamente
         ],
+        "odt" | "ods" | "odp" => &[
+            "content.xml",
+        ],
         _ => return Err(EditError::UnsupportedFormat(ext)),
     };
 
