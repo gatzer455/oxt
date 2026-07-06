@@ -34,6 +34,14 @@ pub type Result<T> = std::result::Result<T, RoundtripError>;
 /// Un documento abierto con preservation bag.
 /// Mantiene el ZIP original en memoria y permite re-escribir solo
 /// la parte que cambió (document.xml / content.xml).
+/// Metadata de una parte ZIP: nombre, datos, método de compresión.
+#[derive(Clone)]
+pub struct ZipPart {
+    pub name: String,
+    pub data: Vec<u8>,
+    pub compression_method: zip::CompressionMethod,
+}
+
 pub struct RoundtripDoc {
     /// OxtIR actual (modificable por el LLM)
     pub ir: OxtIR,
@@ -43,7 +51,7 @@ pub struct RoundtripDoc {
     #[allow(dead_code)]
     pub path: String,
     /// Todas las partes del ZIP como raw bytes
-    pub parts: Vec<(String, Vec<u8>)>,
+    pub parts: Vec<ZipPart>,
     /// Índice de la parte principal (document.xml o content.xml)
     pub main_part_index: Option<usize>,
 }
@@ -58,7 +66,7 @@ impl RoundtripDoc {
         let file = std::fs::File::open(path)?;
         let mut archive = zip::ZipArchive::new(file)?;
 
-        let mut parts: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut parts: Vec<ZipPart> = Vec::new();
         let fmt = crate::ir::DocumentFormat::from_path(path)
             .ok_or_else(|| RoundtripError::UnsupportedFormat(
                 path.extension()
@@ -66,6 +74,17 @@ impl RoundtripDoc {
                     .unwrap_or("(sin extensión)")
                     .to_string()
             ))?;
+
+        // Rechazar formatos no soportados para roundtrip
+        match fmt {
+            crate::ir::DocumentFormat::Xlsx |
+            crate::ir::DocumentFormat::Pptx => {
+                return Err(RoundtripError::UnsupportedFormat(
+                    format!("{}: roundtrip no soportado todavía", fmt)
+                ));
+            }
+            _ => {}
+        }
 
         // Identificar la parte principal según el formato
         let main_part = match fmt {
@@ -92,23 +111,21 @@ impl RoundtripDoc {
             let mut data = Vec::new();
             entry.read_to_end(&mut data)?;
 
+            // Capturar método de compresión original
+            let compression_method = entry.compression();
+
             // Detectar si es la parte principal por el nombre exacto
-            // o por patrón (para sheets y slides)
-            let is_main = if name == main_part {
-                true
-            } else if fmt == crate::ir::DocumentFormat::Xlsx && name.starts_with("xl/worksheets/sheet") {
-                true // Tratamos sheets como partes principales
-            } else if fmt == crate::ir::DocumentFormat::Pptx && name.starts_with("ppt/slides/slide") {
-                true
-            } else {
-                false
-            };
+            let is_main = name == main_part;
 
             if is_main {
                 main_part_index = Some(i);
             }
 
-            parts.push((name, data));
+            parts.push(ZipPart {
+                name,
+                data,
+                compression_method,
+            });
         }
 
         // Leer el documento via el reader estándar para obtener el IR
@@ -171,35 +188,27 @@ impl RoundtripDoc {
 
     /// Guardar el documento, regenerando solo la parte principal.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
-
         let path = path.as_ref();
         let file = std::fs::File::create(path)?;
         let mut zip = zip::ZipWriter::new(file);
 
-        for (i, (name, data)) in self.parts.iter().enumerate() {
+        for (i, part) in self.parts.iter().enumerate() {
             let is_main = Some(i) == self.main_part_index;
 
             if is_main {
-                // Regenerar la parte principal desde el IR
                 let opts = zip::write::SimpleFileOptions::default()
                     .compression_method(zip::CompressionMethod::Deflated);
-                zip.start_file(name, opts)?;
-
+                zip.start_file(&part.name, opts)?;
                 let content = self.regenerate_main_part()?;
                 zip.write_all(content.as_bytes())?;
+            } else if part.name.ends_with('/') {
+                zip.add_directory(&part.name, zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored))?;
             } else {
-                // Preservar la parte original intacta
-                let is_dir = name.ends_with('/');
-                let opts = if is_dir {
-                    zip::write::SimpleFileOptions::default()
-                        .compression_method(zip::CompressionMethod::Stored)
-                } else {
-                    // Usar el mismo método de compresión que el original
-                    zip::write::SimpleFileOptions::default()
-                        .compression_method(zip::CompressionMethod::Deflated)
-                };
-                zip.start_file(name, opts)?;
-                zip.write_all(data)?;
+                let opts = zip::write::SimpleFileOptions::default()
+                    .compression_method(part.compression_method);
+                zip.start_file(&part.name, opts)?;
+                zip.write_all(&part.data)?;
             }
         }
 
@@ -345,6 +354,7 @@ impl RoundtripDoc {
 mod tests {
     use super::*;
     use crate::ir::*;
+    use super::ZipPart;
     #[test]
     fn test_roundtrip_preserves_all_parts() {
         let src = "/tmp/test_roundtrip_real.docx";
@@ -422,8 +432,8 @@ mod tests {
         assert_eq!(doc.format, crate::ir::DocumentFormat::Docx);
 
         // Verificar que las partes se preservaron
-        assert!(doc.parts.iter().any(|(n, _)| n == "[Content_Types].xml"));
-        assert!(doc.parts.iter().any(|(n, _)| n == "_rels/.rels"));
+        assert!(doc.parts.iter().any(|p| p.name == "[Content_Types].xml"));
+        assert!(doc.parts.iter().any(|p| p.name == "_rels/.rels"));
 
         // Guardar y verificar que el IR se preserva
         let out_path = dir.join("test_rt_out.docx");

@@ -365,6 +365,11 @@ impl DocxReader {
                             }
                         }
                         "strike" if in_rpr => {
+                            if let Some(ref mut run) = current_run {
+                                run.strikethrough = Some(true);
+                            }
+                        }
+                        "dstrike" if in_rpr => {
                             // w:strike o w:dstrike
                             if let Some(ref mut run) = current_run {
                                 run.strikethrough = Some(true);
@@ -422,6 +427,31 @@ impl DocxReader {
                     let tag = local_name(&name_data);
                     match tag {
                         "br" if in_run => in_break = true,
+                        "b" if in_rpr => {
+                            if let Some(ref mut run) = current_run {
+                                run.bold = Some(true);
+                            }
+                        }
+                        "i" if in_rpr => {
+                            if let Some(ref mut run) = current_run {
+                                run.italic = Some(true);
+                            }
+                        }
+                        "u" if in_rpr => {
+                            if let Some(ref mut run) = current_run {
+                                run.underline = Some(true);
+                            }
+                        }
+                        "strike" if in_rpr => {
+                            if let Some(ref mut run) = current_run {
+                                run.strikethrough = Some(true);
+                            }
+                        }
+                        "dstrike" if in_rpr => {
+                            if let Some(ref mut run) = current_run {
+                                run.strikethrough = Some(true);
+                            }
+                        }
                         _ => {}
                     }
                 }

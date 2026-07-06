@@ -176,10 +176,14 @@ fn write_docx_paragraph<W: Write>(w: &mut W, runs: &[Run], bold: Option<bool>) -
                 write!(w, r#"<w:strike/>"#)?;
             }
             if let Some(sz) = run.font_size {
-                write!(w, r#"<w:sz w:val="{sz}"/>"#)?;
+                // font_size en half-points, entero
+                let val = (sz as u32).to_string();
+                write!(w, r#"<w:sz w:val="{val}"/>"#)?;
             }
             if let Some(ref color) = run.color {
-                write!(w, r#"<w:color w:val="{color}"/>"#)?;
+                // escape: solo caracteres hex válidos
+                let safe: String = color.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+                write!(w, r#"<w:color w:val="{safe}"/>"#)?;
             }
             write!(w, "</w:rPr>")?;
         }
