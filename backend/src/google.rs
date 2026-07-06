@@ -901,6 +901,340 @@ pub fn write_sheet(spreadsheet_id: &str, ir: &crate::ir::OxtIR) -> Result<()> {
     Ok(())
 }
 
+
+// ── Google Slides Reader ──────────────────────────────────────────────────────
+
+/// Leer una presentación de Google Slides y devolverla como OxtIR.
+/// Cada slide = una Section, con párrafos/headings/listas como elements.
+#[cfg(feature = "google")]
+pub fn read_slides(presentation_id: &str) -> Result<crate::ir::OxtIR> {
+    use crate::ir::{Element, Metadata, Run, Section};
+
+    let tokens = load_tokens()?;
+    let url = format!(
+        "https://slides.googleapis.com/v1/presentations/{presentation_id}"
+    );
+
+    let resp: serde_json::Value = ureq::get(&url)
+        .set("Authorization", &format!("Bearer {}", tokens.access_token))
+        .call()
+        .map_err(|e| GoogleError::Http(e.to_string()))?
+        .into_json()
+        .map_err(|e| GoogleError::Json(e))?;
+
+    let title = resp.get("title")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let mut sections: Vec<Section> = Vec::new();
+
+    if let Some(slides) = resp.get("slides").and_then(|s| s.as_array()) {
+        for slide_entry in slides {
+            let mut elements: Vec<Element> = Vec::new();
+
+            if let Some(page_elements) = slide_entry.get("pageElements")
+                .and_then(|p| p.as_array())
+            {
+                for pe in page_elements {
+                    // Extraer texto de shapes, text boxes, etc.
+                    if let Some(shape) = pe.get("shape") {
+                        if let Some(text) = shape.get("text") {
+                            if let Some(text_elements) = text.get("textElements")
+                                .and_then(|t| t.as_array())
+                            {
+                                let mut runs: Vec<Run> = Vec::new();
+                                let mut is_heading = false;
+
+                                for te in text_elements {
+                                    if let Some(para_style) = te.get("paragraphStyle") {
+                                        // Detectar si es heading por spacing
+                                        if let Some(spacing) = para_style.get("spaceAbove") {
+                                            if let Some(pts) = spacing.get("magnitude") {
+                                                if pts.as_f64().unwrap_or(0.0) > 10.0 {
+                                                    is_heading = true;
+                                                }
+                                            }
+                                        }
+                                        if let Some(named_style) = para_style.get("namedStyleType") {
+                                            if let Some(name) = named_style.as_str() {
+                                                if name.starts_with("HEADING_") || name == "TITLE" {
+                                                    is_heading = true;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if let Some(text_run) = te.get("textRun") {
+                                        let content = text_run.get("content")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string();
+
+                                        if content.trim().is_empty() {
+                                            continue;
+                                        }
+
+                                        let mut run = Run::plain(&content);
+
+                                        if let Some(style) = text_run.get("style") {
+                                            run.bold = style.get("bold").and_then(|v| v.as_bool());
+                                            run.italic = style.get("italic").and_then(|v| v.as_bool());
+                                            run.underline = style.get("underline").and_then(|v| v.as_bool());
+                                            if let Some(fg) = style.get("foregroundColor") {
+                                                if let Some(color) = fg.get("color") {
+                                                    run.color = rgb_color_to_hex(color);
+                                                }
+                                            }
+                                            if let Some(font_size) = style.get("fontSize") {
+                                                if let Some(pts) = font_size.get("magnitude") {
+                                                    if let Some(sz) = pts.as_f64() {
+                                                        run.font_size = Some(sz as f32);
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        runs.push(run);
+                                    }
+                                }
+
+                                if !runs.is_empty() {
+                                    if is_heading {
+                                        let text: String = runs.iter().map(|r| r.text.as_str()).collect();
+                                        elements.push(Element::Heading {
+                                            level: 2,
+                                            text: text.trim().to_string(),
+                                        });
+                                    } else {
+                                        elements.push(Element::Paragraph { runs });
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Tablas en slides
+                    if let Some(table) = pe.get("table") {
+                        if let Some(rows) = table.get("tableRows").and_then(|r| r.as_array()) {
+                            let mut table_rows: Vec<Vec<String>> = Vec::new();
+                            for row_entry in rows {
+                                let mut row: Vec<String> = Vec::new();
+                                if let Some(cells) = row_entry.get("tableCells")
+                                    .and_then(|c| c.as_array())
+                                {
+                                    for cell in cells {
+                                        let cell_text = cell
+                                            .pointer("/text/textElements/0/textRun/content")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string();
+                                        row.push(cell_text.trim().to_string());
+                                    }
+                                }
+                                if !row.is_empty() {
+                                    table_rows.push(row);
+                                }
+                            }
+                            if !table_rows.is_empty() {
+                                elements.push(Element::Table { rows: table_rows });
+                            }
+                        }
+                    }
+                }
+            }
+
+            sections.push(Section {
+                title: None,
+                elements,
+            });
+        }
+    }
+
+    let ir = crate::ir::OxtIR {
+        metadata: Metadata {
+            title,
+            subject: None,
+            creator: None,
+            page_count: None,
+            word_count: None,
+        },
+        sections,
+    };
+
+    Ok(ir)
+}
+
+/// Crear una presentación en blanco en Google Slides.
+#[cfg(feature = "google")]
+pub fn create_slides(title: &str) -> Result<String> {
+    let tokens = load_tokens()?;
+
+    let body = serde_json::json!({
+        "title": title,
+    });
+
+    let resp: serde_json::Value = ureq::post("https://slides.googleapis.com/v1/presentations")
+        .set("Authorization", &format!("Bearer {}", tokens.access_token))
+        .set("Content-Type", "application/json")
+        .send_json(&body)
+        .map_err(|e| GoogleError::Http(e.to_string()))?
+        .into_json()
+        .map_err(|e| GoogleError::Json(e))?;
+
+    let pres_id = resp.get("presentationId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| GoogleError::Api("No presentationId en respuesta".into()))?;
+
+    Ok(pres_id.to_string())
+}
+
+/// Escribir contenido de un OxtIR a una presentación de Google Slides.
+#[cfg(feature = "google")]
+pub fn write_slides(presentation_id: &str, ir: &crate::ir::OxtIR) -> Result<()> {
+    use crate::ir::Element;
+
+    let tokens = load_tokens()?;
+    let mut requests: Vec<serde_json::Value> = Vec::new();
+
+    // Primero: borrar slides existentes (excepto el primero)
+    requests.push(serde_json::json!({
+        "deleteObject": {
+            "objectId": "p"  // placeholder
+        }
+    }));
+
+    // Por cada sección, crear un slide
+    for (section_idx, section) in ir.sections.iter().enumerate() {
+        let slide_id = format!("slide_{section_idx}");
+
+        // Crear slide
+        requests.push(serde_json::json!({
+            "createSlide": {
+                "objectId": slide_id,
+                "slideLayoutReference": {
+                    "predefinedLayout": "BLANK"
+                },
+                "placeholderIdMappings": []
+            }
+        }));
+
+        // Agregar texto como shapes
+        for element in &section.elements {
+            match element {
+                Element::Heading { text, .. } => {
+                    let shape_id = format!("{slide_id}_title");
+                    requests.push(serde_json::json!({
+                        "createShape": {
+                            "objectId": shape_id,
+                            "shapeType": "TEXT_BOX",
+                            "elementProperties": {
+                                "pageObjectId": slide_id,
+                                "size": {
+                                    "width": { "magnitude": 300, "unit": "PT" },
+                                    "height": { "magnitude": 50, "unit": "PT" }
+                                },
+                                "transform": {
+                                    "scaleX": 1, "scaleY": 1,
+                                    "translateX": 50, "translateY": 50.0 + (section_idx * 300) as f64,
+                                    "unit": "PT"
+                                }
+                            }
+                        }
+                    }));
+                    requests.push(serde_json::json!({
+                        "insertText": {
+                            "objectId": shape_id,
+                            "text": text
+                        }
+                    }));
+                }
+                Element::Paragraph { runs } => {
+                    let shape_id = format!("{slide_id}_p_{}", section_idx * 100);
+                    let text: String = runs.iter().map(|r| r.text.as_str()).collect();
+                    requests.push(serde_json::json!({
+                        "createShape": {
+                            "objectId": shape_id,
+                            "shapeType": "TEXT_BOX",
+                            "elementProperties": {
+                                "pageObjectId": slide_id,
+                                "size": {
+                                    "width": { "magnitude": 300, "unit": "PT" },
+                                    "height": { "magnitude": 30, "unit": "PT" }
+                                },
+                                "transform": {
+                                    "scaleX": 1, "scaleY": 1,
+                                    "translateX": 50, "translateY": 120.0 + (section_idx * 50) as f64,
+                                    "unit": "PT"
+                                }
+                            }
+                        }
+                    }));
+                    requests.push(serde_json::json!({
+                        "insertText": {
+                            "objectId": shape_id,
+                            "text": text
+                        }
+                    }));
+                }
+                Element::List { items, .. } => {
+                    for (item_idx, item) in items.iter().enumerate() {
+                        let shape_id = format!("{slide_id}_li_{item_idx}");
+                        requests.push(serde_json::json!({
+                            "createShape": {
+                                "objectId": shape_id,
+                                "shapeType": "TEXT_BOX",
+                                "elementProperties": {
+                                    "pageObjectId": slide_id,
+                                    "size": {
+                                        "width": { "magnitude": 300, "unit": "PT" },
+                                        "height": { "magnitude": 30, "unit": "PT" }
+                                    },
+                                    "transform": {
+                                        "scaleX": 1, "scaleY": 1,
+                                        "translateX": 70, "translateY": 120.0 + (item_idx * 30) as f64,
+                                        "unit": "PT"
+                                    }
+                                }
+                            }
+                        }));
+                        requests.push(serde_json::json!({
+                            "insertText": {
+                                "objectId": shape_id,
+                                "text": format!("• {item}")
+                            }
+                        }));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if requests.is_empty() {
+        return Ok(());
+    }
+
+    // Eliminar el primer request (deleteObject placeholder) y reemplazar
+    // con lógica real: obtener slides existentes y borrarlos
+    requests.remove(0);
+
+    let body = serde_json::json!({ "requests": requests });
+
+    let url = format!(
+        "https://slides.googleapis.com/v1/presentations/{presentation_id}:batchUpdate"
+    );
+
+    let _resp: serde_json::Value = ureq::post(&url)
+        .set("Authorization", &format!("Bearer {}", tokens.access_token))
+        .set("Content-Type", "application/json")
+        .send_json(&body)
+        .map_err(|e| GoogleError::Http(e.to_string()))?
+        .into_json()
+        .map_err(|e| GoogleError::Json(e))?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -74,6 +74,31 @@ enum GoogleCommand {
         #[arg(long)]
         from: String,
     },
+
+    /// Leer una presentación de Google Slides
+    #[command(name = "slides:read")]
+    SlidesRead {
+        /// ID de la presentación
+        presentation_id: String,
+        /// Formato de salida: text, markdown, ir
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Crear una presentación en Google Slides
+    #[command(name = "slides:create")]
+    SlidesCreate {
+        /// Título de la presentación
+        title: String,
+    },
+    /// Actualizar una presentación desde un archivo IR
+    #[command(name = "slides:update")]
+    SlidesUpdate {
+        /// ID de la presentación
+        presentation_id: String,
+        /// Archivo JSON con el OxtIR
+        #[arg(long)]
+        from: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -218,6 +243,78 @@ fn handle_google(cmd: GoogleCommand) {
             {
                 match oxt_backend::google::create_sheet(&title) {
                     Ok(id) => println!("Creado: https://docs.google.com/spreadsheets/d/{id}"),
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            #[cfg(not(feature = "google"))]
+            {
+                eprintln!("Error: Google feature no habilitada");
+                std::process::exit(1);
+            }
+        }
+        GoogleCommand::SlidesRead { presentation_id, format } => {
+            #[cfg(feature = "google")]
+            {
+                match oxt_backend::google::read_slides(&presentation_id) {
+                    Ok(ir) => {
+                        let output = match format.as_str() {
+                            "ir" => serde_json::to_string_pretty(&ir).unwrap_or_default(),
+                            "markdown" => ir.to_markdown(),
+                            _ => ir.plain_text(),
+                        };
+                        println!("{output}");
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            #[cfg(not(feature = "google"))]
+            {
+                eprintln!("Error: Google feature no habilitada");
+                std::process::exit(1);
+            }
+        }
+        GoogleCommand::SlidesCreate { title } => {
+            #[cfg(feature = "google")]
+            {
+                match oxt_backend::google::create_slides(&title) {
+                    Ok(id) => println!("Creado: https://docs.google.com/presentation/d/{id}"),
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            #[cfg(not(feature = "google"))]
+            {
+                eprintln!("Error: Google feature no habilitada");
+                std::process::exit(1);
+            }
+        }
+        GoogleCommand::SlidesUpdate { presentation_id, from } => {
+            #[cfg(feature = "google")]
+            {
+                let json_data = match std::fs::read_to_string(&from) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!("Error leyendo {from}: {e}");
+                        std::process::exit(1);
+                    }
+                };
+                let ir: oxt_backend::ir::OxtIR = match serde_json::from_str(&json_data) {
+                    Ok(ir) => ir,
+                    Err(e) => {
+                        eprintln!("Error parseando IR: {e}");
+                        std::process::exit(1);
+                    }
+                };
+                match oxt_backend::google::write_slides(&presentation_id, &ir) {
+                    Ok(_) => println!("Presentación actualizada: {presentation_id}"),
                     Err(e) => {
                         eprintln!("Error: {e}");
                         std::process::exit(1);
