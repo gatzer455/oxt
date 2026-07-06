@@ -163,6 +163,7 @@ pub fn replace_text(path: impl AsRef<Path>, old: &str, new: &str) -> Result<Edit
 
 
 /// Cuenta ocurrencias de un substring.
+#[allow(dead_code)]
 fn count_occurrences(text: &str, pattern: &str) -> usize {
     text.matches(pattern).count()
 }

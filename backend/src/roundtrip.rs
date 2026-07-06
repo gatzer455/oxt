@@ -136,20 +136,20 @@ impl RoundtripDoc {
                     Element::Heading { text, .. } => {
                         let before = text.clone();
                         *text = text.replace(old, new);
-                        count += (before.len() - text.len()) / old.len();
+                        count += before.matches(old).count();
                     }
                     Element::Paragraph { runs } => {
                         for run in runs {
                             let before = run.text.clone();
                             run.text = run.text.replace(old, new);
-                            count += (before.len() - run.text.len()) / old.len();
+                            count += before.matches(old).count();
                         }
                     }
                     Element::List { items, .. } => {
                         for item in items {
                             let before = item.clone();
                             *item = item.replace(old, new);
-                            count += (before.len() - item.len()) / old.len();
+                            count += before.matches(old).count();
                         }
                     }
                     Element::Table { rows } => {
@@ -157,7 +157,7 @@ impl RoundtripDoc {
                             for cell in row {
                                 let before = cell.clone();
                                 *cell = cell.replace(old, new);
-                                count += (before.len() - cell.len()) / old.len();
+                                count += before.matches(old).count();
                             }
                         }
                     }
@@ -433,6 +433,57 @@ mod tests {
         let text = doc2.plain_text();
         assert!(text.contains("Título"));
         assert!(text.contains("Texto en negrita"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_roundtrip_replace_text_real_docx() {
+        let src = "/tmp/test_complete.docx";
+        if std::path::Path::new(src).exists() {
+            let dir = std::env::temp_dir().join("oxt_test_rt_real");
+            let _ = std::fs::create_dir_all(&dir);
+            let p = dir.join("real.docx");
+            std::fs::copy(src, &p).unwrap();
+
+            let mut doc = super::RoundtripDoc::open(&p).unwrap();
+            let orig_text = doc.ir.plain_text();
+            let count = doc.replace_text_and_save("Metodología", "METODOLOGÍA", &p).unwrap();
+            assert!(count > 0, "debe haber reemplazos en el doc real, count={count}");
+
+            let doc2 = crate::Document::open(&p).unwrap();
+            let text = doc2.plain_text();
+            assert!(text.contains("METODOLOGÍA"), "debe tener METODOLOGÍA");
+            assert!(!text.contains("Metodología"), "no debe tener Metodología original");
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_replace_text_workflow() {
+        let ir = OxtIR {
+            metadata: Metadata::default(),
+            sections: vec![Section {
+                title: None,
+                elements: vec![
+                    Element::Paragraph { runs: vec![Run::plain("Hello World from Roundtrip")] },
+                ],
+            }],
+        };
+
+        let dir = std::env::temp_dir().join("oxt_test_rt_replace");
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("test_rt.docx");
+        crate::create::create_from_ir(&p, &ir).unwrap();
+
+        let mut doc = super::RoundtripDoc::open(&p).unwrap();
+        doc.replace_text_and_save("World", "oxt", &p).unwrap();
+
+        let doc2 = crate::Document::open(&p).unwrap();
+        let text = doc2.plain_text();
+        assert!(text.contains("Hello oxt"), "debe tener reemplazo: {text:?}");
+        assert!(!text.contains("World"), "no debe tener original");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
