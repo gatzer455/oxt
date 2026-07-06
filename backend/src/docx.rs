@@ -388,7 +388,7 @@ impl DocxReader {
                     let name_data = e.name().as_ref().to_owned();
                     let tag = local_name(&name_data);
                     match tag {
-                        "pStyle" => {}
+                        "pStyle" => in_pstyle = false,
                         "pPr" => {}
                         "p" => {
                             if in_paragraph {
