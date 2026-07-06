@@ -1,3 +1,4 @@
+#![allow(unused_assignments, unused_variables)]
 //! # PPTX Reader
 //!
 //! Parsea un archivo .pptx → OxtIR.
@@ -38,6 +39,7 @@ pub type Result<T> = std::result::Result<T, PptxError>;
 struct SlideInfo {
     id: u32,
     rel_id: String,
+    #[allow(dead_code)]
     filename: String,
 }
 
@@ -106,7 +108,7 @@ impl PptxReader {
         let mut buf = Vec::new();
 
         let mut slides = Vec::new();
-        let mut in_sld_id = false;
+        let in_sld_id = false;
 
         loop {
             match reader.read_event_into(&mut buf) {
@@ -153,11 +155,11 @@ impl PptxReader {
 
         let mut elements = Vec::new();
         let mut in_sp = false;       // <p:sp> = shape con texto
-        let mut in_txBody = false;   // <p:txBody> = text body
+        let mut in_tx_body = false;   // <p:txBody> = text body
         let mut in_p = false;       // <a:p> = paragraph
         let mut in_r = false;       // <a:r> = run
         let mut in_t = false;       // <a:t> = text
-        let mut in_rPr = false;     // <a:rPr> = run properties
+        let mut in_r_pr = false;     // <a:rPr> = run properties
         let mut in_pic = false;     // <p:pic> = picture
 
         let mut current_paragraph_runs: Vec<Run> = Vec::new();
@@ -176,9 +178,9 @@ impl PptxReader {
                             in_sp = true;
                         }
                         b"txBody" | b"p:txBody" if in_sp => {
-                            in_txBody = true;
+                            in_tx_body = true;
                         }
-                        b"p" | b"a:p" if in_txBody => {
+                        b"p" | b"a:p" if in_tx_body => {
                             in_p = true;
                             current_paragraph_runs = Vec::new();
                         }
@@ -187,7 +189,7 @@ impl PptxReader {
                             current_run = Some(Run::plain(""));
                         }
                         b"rPr" | b"a:rPr" if in_r => {
-                            in_rPr = true;
+                            in_r_pr = true;
                             current_bold = false;
                             current_italic = false;
                             current_font_size = None;
@@ -206,8 +208,8 @@ impl PptxReader {
                     let name = e.name().as_ref().to_vec();
                     match name.as_slice() {
                         // Atributos de run properties en elementos vacíos
-                        b"solidFill" | b"a:solidFill" if in_rPr => {}
-                        b"srgbClr" | b"a:srgbClr" if in_rPr => {
+                        b"solidFill" | b"a:solidFill" if in_r_pr => {}
+                        b"srgbClr" | b"a:srgbClr" if in_r_pr => {
                             current_color = e.try_get_attribute("val").ok().flatten()
                                 .map(|a| String::from_utf8_lossy(&a.value).to_string());
                         }
@@ -227,7 +229,7 @@ impl PptxReader {
                     let name = e.name().as_ref().to_vec();
                     match name.as_slice() {
                         b"rPr" | b"a:rPr" => {
-                            in_rPr = false;
+                            in_r_pr = false;
                         }
                         b"r" | b"a:r" => {
                             if let Some(mut run) = current_run.take() {
@@ -256,7 +258,7 @@ impl PptxReader {
                             in_p = false;
                         }
                         b"txBody" | b"p:txBody" => {
-                            in_txBody = false;
+                            in_tx_body = false;
                         }
                         b"sp" | b"p:sp" => {
                             in_sp = false;

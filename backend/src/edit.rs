@@ -1,3 +1,5 @@
+#![allow(unused_assignments, unused_variables)]
+#![allow(unused_assignments)]
 //! # Edit — modificar documentos in-place
 //!
 //! Abre un OOXML (DOCX/XLSX/PPTX) como ZIP, reemplaza texto
@@ -6,7 +8,7 @@
 //! Estrategia: modificación directa del XML serializado.
 //! Simple, predecible, preserva el resto del paquete intacto.
 
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Write};
 use std::path::Path;
 
 /// Error del módulo edit.
@@ -69,6 +71,10 @@ pub fn replace_text(path: impl AsRef<Path>, old: &str, new: &str) -> Result<Edit
         "odt" | "ods" | "odp" => &[
             "content.xml",
         ],
+        "doc" | "xls" | "ppt" => {
+            // Legacy binary: leer→OxtIR→reemplazar→escribir como OOXML
+            return edit_legacy_via_ir(path, &ext, old, new);
+        }
         _ => return Err(EditError::UnsupportedFormat(ext)),
     };
 
@@ -142,7 +148,7 @@ pub fn replace_text(path: impl AsRef<Path>, old: &str, new: &str) -> Result<Edit
     let file = std::fs::File::create(path)?;
     let mut writer = zip::ZipWriter::new(file);
 
-    let options = zip::write::SimpleFileOptions::default()
+    let _options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
 
     for (name, data) in &new_entries {
@@ -167,6 +173,101 @@ pub fn replace_text(path: impl AsRef<Path>, old: &str, new: &str) -> Result<Edit
 /// Cuenta ocurrencias de un substring.
 fn count_occurrences(text: &str, pattern: &str) -> usize {
     text.matches(pattern).count()
+}
+
+
+/// Editar un documento legacy leyéndolo a OxtIR, reemplazando texto,
+/// y escribiendo como OOXML (.doc → .docx, .xls → .xlsx, .ppt → .pptx).
+fn edit_legacy_via_ir(path: &Path, ext: &str, old: &str, new: &str) -> Result<EditResult> {
+    use crate::create;
+    use crate::Document;
+
+    // Leer el documento legacy a OxtIR
+    let doc = Document::open(path)
+        .map_err(|e| EditError::Other(format!("Error al leer legacy: {e}")))?;
+    let mut ir = doc.into_ir();
+
+    // Contar y reemplazar texto en todos los runs del IR
+    let mut replacements = 0;
+
+    fn replace_in_ir(ir: &mut crate::ir::OxtIR, old: &str, new: &str) -> usize {
+        let mut count = 0;
+        for section in &mut ir.sections {
+            for element in &mut section.elements {
+                match element {
+                    crate::ir::Element::Heading { text, .. } => {
+                        let before = text.clone();
+                        *text = text.replace(old, new);
+                        if text != &before {
+                            count += before.matches(old).count();
+                        }
+                    }
+                    crate::ir::Element::Paragraph { runs } => {
+                        for run in runs {
+                            let before = run.text.clone();
+                            run.text = run.text.replace(old, new);
+                            if run.text != before {
+                                count += before.matches(old).count();
+                            }
+                        }
+                    }
+                    crate::ir::Element::List { items, .. } => {
+                        for item in items {
+                            let before = item.clone();
+                            *item = item.replace(old, new);
+                            if item != &before {
+                                count += before.matches(old).count();
+                            }
+                        }
+                    }
+                    crate::ir::Element::Table { rows } => {
+                        for row in rows {
+                            for cell in row {
+                                let before = cell.clone();
+                                *cell = cell.replace(old, new);
+                                if cell != &before {
+                                    count += before.matches(old).count();
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        count
+    }
+
+    replacements = replace_in_ir(&mut ir, old, new);
+
+    if replacements == 0 {
+        return Ok(EditResult {
+            path: path.to_string_lossy().to_string(),
+            replacements: 0,
+            affected_parts: vec![],
+        });
+    }
+
+    // Determinar extensión OOXML de salida
+    let out_ext = match ext {
+        "doc" => "docx",
+        "xls" => "xlsx",
+        "ppt" => "pptx",
+        _ => unreachable!(),
+    };
+
+    let out_path = path.with_extension(out_ext);
+
+    // Escribir como OOXML
+    create::create_from_ir(&out_path, &ir)
+        .map_err(|e| EditError::Other(format!("Error al escribir {out_ext}: {e}")))?;
+
+    // Reportar
+    Ok(EditResult {
+        path: out_path.to_string_lossy().to_string(),
+        replacements,
+        affected_parts: vec![format!("convertido de .{ext} a .{out_ext}")],
+    })
 }
 
 #[cfg(test)]
@@ -242,5 +343,44 @@ mod tests {
 
         // Limpiar
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_edit_legacy_doc_converts_to_docx() {
+        use std::io::Read;
+
+        let dir = std::env::temp_dir().join("oxt_test_legacy_edit");
+        let _ = std::fs::create_dir_all(&dir);
+        let doc_path = dir.join("test_legacy.doc");
+        let docx_path = dir.join("test_legacy.docx");
+
+        let ir = crate::ir::OxtIR {
+            metadata: crate::ir::Metadata::default(),
+            sections: vec![
+                crate::ir::Section {
+                    title: None,
+                    elements: vec![
+                        crate::ir::Element::Paragraph {
+                            runs: vec![crate::ir::Run::plain("Texto legacy para editar")],
+                        },
+                    ],
+                },
+            ],
+        };
+
+        crate::create::create_from_ir(&doc_path, &ir).unwrap();
+        assert!(doc_path.exists());
+
+        let result = super::replace_text(&doc_path, "legacy", "convertido").unwrap();
+        assert_eq!(result.replacements, 1);
+        assert!(result.affected_parts[0].contains("convertido"));
+
+        assert!(docx_path.exists());
+        let doc = crate::Document::open(&docx_path).unwrap();
+        let text = doc.plain_text();
+        assert!(text.contains("convertido"));
+        assert!(!text.contains("legacy"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

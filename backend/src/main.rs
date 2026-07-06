@@ -121,6 +121,12 @@ fn main() {
                         println!("Reemplazos: {}", result.replacements);
                         if !result.affected_parts.is_empty() {
                             println!("Partes afectadas: {}", result.affected_parts.join(", "));
+                            // Mostrar advertencia si hubo conversión de formato
+                            for part in &result.affected_parts {
+                                if part.starts_with("convertido") {
+                                    eprintln!("⚠️  {}", part);
+                                }
+                            }
                         }
                     }
                 }

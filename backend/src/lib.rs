@@ -68,6 +68,32 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Intentar abrir un documento con el lector específico de su formato.
+fn try_open_primary(path: &std::path::Path, fmt: DocumentFormat) -> Result<OxtIR> {
+    match fmt {
+        DocumentFormat::Docx => {
+            let reader = docx::DocxReader::open(path)?;
+            Ok(reader.into_ir())
+        }
+        DocumentFormat::Xlsx => {
+            let reader = xlsx::XlsxReader::open(path)?;
+            Ok(reader.into_ir())
+        }
+        DocumentFormat::Pptx => {
+            let reader = pptx::PptxReader::open(path)?;
+            Ok(reader.into_ir())
+        }
+        DocumentFormat::Doc | DocumentFormat::Xls | DocumentFormat::Ppt => {
+            let reader = legacy::LegacyReader::open(path)?;
+            Ok(reader.into_ir())
+        }
+        DocumentFormat::Odt | DocumentFormat::Ods | DocumentFormat::Odp => {
+            let reader = odf::OdfReader::open(path)?;
+            Ok(reader.into_ir())
+        }
+    }
+}
+
 /// Un documento de oficina abierto (cualquier formato soportado).
 pub struct Document {
     format: DocumentFormat,
@@ -88,28 +114,23 @@ impl Document {
                     .to_string()
             ))?;
 
-        let ir = match fmt {
-            DocumentFormat::Docx => {
-                let reader = docx::DocxReader::open(path)?;
-                reader.into_ir()
-            }
-            DocumentFormat::Xlsx => {
-                let reader = xlsx::XlsxReader::open(path)?;
-                reader.into_ir()
-            }
-            DocumentFormat::Pptx => {
-                let reader = pptx::PptxReader::open(path)?;
-                reader.into_ir()
-            }
-            DocumentFormat::Doc | DocumentFormat::Xls | DocumentFormat::Ppt => {
-                let reader = legacy::LegacyReader::open(path)?;
-                reader.into_ir()
-            }
-            DocumentFormat::Odt | DocumentFormat::Ods | DocumentFormat::Odp => {
-                let reader = odf::OdfReader::open(path)?;
-                reader.into_ir()
-            }
-        };
+        // Intentar el lector primario; si falla y es legacy,
+        // probar OOXML como fallback
+        let ir = try_open_primary(path, fmt)
+            .or_else(|primary_err| {
+                // Para extensiones legacy, probar OOXML como fallback
+                let fallback_fmt = match fmt {
+                    DocumentFormat::Doc => Some(DocumentFormat::Docx),
+                    DocumentFormat::Xls => Some(DocumentFormat::Xlsx),
+                    DocumentFormat::Ppt => Some(DocumentFormat::Pptx),
+                    _ => None,
+                };
+                if let Some(fb) = fallback_fmt {
+                    try_open_primary(path, fb).map_err(|_| primary_err)
+                } else {
+                    Err(primary_err)
+                }
+            })?;
 
         Ok(Self {
             format: fmt,

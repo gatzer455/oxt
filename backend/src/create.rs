@@ -44,8 +44,11 @@ pub fn create_from_ir(path: impl AsRef<Path>, ir: &OxtIR) -> Result<()> {
         "docx" => create_docx(path, ir),
         "xlsx" => create_xlsx(path, ir),
         "pptx" => create_pptx(path, ir),
+        "doc" => create_docx(path, ir),
         "odt" => create_odt(path, ir),
+        "xls" => create_xlsx(path, ir),
         "ods" => create_ods(path, ir),
+        "ppt" => create_pptx(path, ir),
         "odp" => create_odp(path, ir),
         _ => Err(CreateError::UnsupportedFormat(ext)),
     }
@@ -111,7 +114,7 @@ fn write_docx_body<W: Write>(w: &mut W, ir: &OxtIR) -> std::io::Result<()> {
 
         for element in &section.elements {
             match element {
-                Element::Heading { level, text } => {
+                Element::Heading { level: _, text } => {
                     // Los headings se renderizan como párrafos con estilo
                     write_docx_paragraph(w, &[Run::plain(text)], Some(true))?;
                 }
@@ -179,7 +182,7 @@ fn write_docx_paragraph<W: Write>(w: &mut W, runs: &[Run], bold: Option<bool>) -
 fn write_docx_table<W: Write>(w: &mut W, rows: &[Vec<String>]) -> std::io::Result<()> {
     write!(w, r#"<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/></w:tblPr>"#)?;
 
-    for (ri, row) in rows.iter().enumerate() {
+    for (_ri, row) in rows.iter().enumerate() {
         write!(w, "<w:tr>")?;
         for cell in row {
             write!(w, r#"<w:tc><w:p><w:r><w:t>"#)?;
@@ -641,6 +644,7 @@ fn write_escaped<W: Write>(w: &mut W, text: &str) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use crate::ir::*;
+    use std::io::Read;
 
     #[test]
     fn test_escape() {
@@ -737,6 +741,48 @@ mod tests {
         let text = doc.plain_text();
         assert!(text.contains("Título ODT"), "debe tener heading, obtuve: {text:?}");
         assert!(text.contains("Párrafo de prueba"), "debe tener párrafo");
+
+        // Limpiar
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_create_legacy_doc_roundtrip() {
+        use std::io::Read;
+
+        let ir = OxtIR {
+            metadata: Metadata::default(),
+            sections: vec![
+                Section {
+                    title: None,
+                    elements: vec![
+                        Element::Heading { level: 1, text: "Título Legacy".into() },
+                        Element::Paragraph {
+                            runs: vec![Run::plain("Creado como .doc")],
+                        },
+                    ],
+                },
+            ],
+        };
+
+        let dir = std::env::temp_dir().join("oxt_test_legacy_create");
+        let _ = std::fs::create_dir_all(&dir);
+        let doc_path = dir.join("test_legacy.doc");
+
+        // Crear con extensión .doc (debe crear OOXML internamente)
+        create_from_ir(&doc_path, &ir).unwrap();
+
+        // Verificar que es un ZIP válido (OOXML, no OLE2)
+        let file = std::fs::File::open(&doc_path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert!(archive.by_name("word/document.xml").is_ok(),
+            "debe contener word/document.xml (OOXML)");
+
+        // Leerlo de vuelta (debe usar fallback OOXML)
+        let doc = crate::Document::open(&doc_path).unwrap();
+        let text = doc.plain_text();
+        assert!(text.contains("Título Legacy"), "debe leer heading, obtuve: {text:?}");
+        assert!(text.contains("Creado como .doc"), "debe leer párrafo");
 
         // Limpiar
         let _ = std::fs::remove_dir_all(&dir);

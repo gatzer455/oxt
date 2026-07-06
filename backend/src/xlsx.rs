@@ -1,3 +1,4 @@
+#![allow(unused_assignments, unused_variables)]
 //! # XLSX Reader
 //!
 //! Parsea un archivo .xlsx → OxtIR.
@@ -42,6 +43,7 @@ pub type Result<T> = std::result::Result<T, XlsxError>;
 /// Información de una hoja.
 struct SheetInfo {
     name: String,
+    #[allow(dead_code)]
     sheet_id: u32,
     rel_id: String,
 }
@@ -269,7 +271,7 @@ impl XlsxReader {
         let mut buf = Vec::new();
 
         let mut sheets = Vec::new();
-        let mut in_sheet = false;
+        let in_sheet = false;
 
         loop {
             match reader.read_event_into(&mut buf) {
