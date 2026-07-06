@@ -20,6 +20,7 @@ pub mod ir;
 pub mod opc;
 pub mod xlsx;
 pub mod pptx;
+pub mod legacy;
 
 use std::path::Path;
 
@@ -39,6 +40,9 @@ pub enum Error {
 
     #[error("PPTX error: {0}")]
     Pptx(#[from] pptx::PptxError),
+
+    #[error("Legacy error: {0}")]
+    Legacy(#[from] legacy::LegacyError),
 
     #[error("OPC error: {0}")]
     Opc(#[from] opc::OpcError),
@@ -85,9 +89,15 @@ impl Document {
                 let reader = pptx::PptxReader::open(path)?;
                 reader.into_ir()
             }
-            _ => return Err(Error::UnsupportedFormat(format!(
-                "{}: no implementado aún (solo DOCX por ahora)", fmt
-            ))),
+            DocumentFormat::Doc | DocumentFormat::Xls | DocumentFormat::Ppt => {
+                let reader = legacy::LegacyReader::open(path)?;
+                reader.into_ir()
+            }
+            DocumentFormat::Odt | DocumentFormat::Ods | DocumentFormat::Odp => {
+                return Err(Error::UnsupportedFormat(format!(
+                    "{}: ODF no implementado aún", fmt
+                )));
+            }
         };
 
         Ok(Self {
