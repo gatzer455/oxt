@@ -362,7 +362,7 @@ pub fn read_doc(document_id: &str) -> Result<crate::ir::OxtIR> {
 /// Convertir respuesta JSON de Google Docs a OxtIR.
 #[cfg(feature = "google")]
 fn doc_to_ir(doc: &serde_json::Value) -> Result<crate::ir::OxtIR> {
-    use crate::ir::{Element, Metadata, Run, Section};
+    use crate::ir::{Element, Metadata, Section};
 
     let title = doc.get("title")
         .and_then(|v| v.as_str())
@@ -721,7 +721,7 @@ pub fn create_doc(title: &str) -> Result<String> {
 /// Cada hoja (sheet) del documento se convierte en una Section con un Element::Table.
 #[cfg(feature = "google")]
 pub fn read_sheet(spreadsheet_id: &str) -> Result<crate::ir::OxtIR> {
-    use crate::ir::{Element, Metadata, Run, Section};
+    use crate::ir::{Element, Metadata, Section};
 
     let tokens = load_tokens()?;
     let url = format!(
