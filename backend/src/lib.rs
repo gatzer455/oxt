@@ -19,6 +19,7 @@ pub mod docx;
 pub mod ir;
 pub mod opc;
 pub mod xlsx;
+pub mod pptx;
 
 use std::path::Path;
 
@@ -35,6 +36,9 @@ pub enum Error {
 
     #[error("XLSX error: {0}")]
     Xlsx(#[from] xlsx::XlsxError),
+
+    #[error("PPTX error: {0}")]
+    Pptx(#[from] pptx::PptxError),
 
     #[error("OPC error: {0}")]
     Opc(#[from] opc::OpcError),
@@ -78,7 +82,8 @@ impl Document {
                 reader.into_ir()
             }
             DocumentFormat::Pptx => {
-                return Err(Error::Other("PPTX: no implementado aún".into()));
+                let reader = pptx::PptxReader::open(path)?;
+                reader.into_ir()
             }
             _ => return Err(Error::UnsupportedFormat(format!(
                 "{}: no implementado aún (solo DOCX por ahora)", fmt
