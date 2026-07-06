@@ -1,6 +1,6 @@
 //! # XLSX Reader
 //!
-//! Parsea un archivo .xlsx → XiIR.
+//! Parsea un archivo .xlsx → OxtIR.
 //!
 //! Un XLSX es un ZIP con:
 //!   - xl/sharedStrings.xml    → tabla de strings compartidos
@@ -48,7 +48,7 @@ struct SheetInfo {
 
 /// XLSX parseado.
 pub struct XlsxReader {
-    ir: XiIR,
+    ir: OxtIR,
 }
 
 impl XlsxReader {
@@ -97,7 +97,7 @@ impl XlsxReader {
             });
         }
 
-        let ir = XiIR {
+        let ir = OxtIR {
             metadata: Metadata::default(),
             sections,
         };
@@ -106,7 +106,7 @@ impl XlsxReader {
     }
 
     /// Consumir y devolver el IR.
-    pub fn into_ir(self) -> XiIR {
+    pub fn into_ir(self) -> OxtIR {
         self.ir
     }
 

@@ -1,6 +1,6 @@
 //! # Create — crear documentos desde el IR
 //!
-//! Toma un XiIR (o un JSON con la misma estructura) y produce
+//! Toma un OxtIR (o un JSON con la misma estructura) y produce
 //! un DOCX/XLSX/PPTX válido.
 
 use std::io::Write;
@@ -33,7 +33,7 @@ pub type Result<T> = std::result::Result<T, CreateError>;
 ///
 /// - `path`: ruta de salida (ej: "reporte.docx")
 /// - `ir`: el IR del documento
-pub fn create_from_ir(path: impl AsRef<Path>, ir: &XiIR) -> Result<()> {
+pub fn create_from_ir(path: impl AsRef<Path>, ir: &OxtIR) -> Result<()> {
     let path = path.as_ref();
     let ext = path.extension()
         .and_then(|e| e.to_str())
@@ -44,6 +44,9 @@ pub fn create_from_ir(path: impl AsRef<Path>, ir: &XiIR) -> Result<()> {
         "docx" => create_docx(path, ir),
         "xlsx" => create_xlsx(path, ir),
         "pptx" => create_pptx(path, ir),
+        "odt" => create_odt(path, ir),
+        "ods" => create_ods(path, ir),
+        "odp" => create_odp(path, ir),
         _ => Err(CreateError::UnsupportedFormat(ext)),
     }
 }
@@ -54,13 +57,13 @@ pub fn create_from_ir(path: impl AsRef<Path>, ir: &XiIR) -> Result<()> {
 /// - `json_path`: ruta al JSON con el IR
 pub fn create_from_json(out_path: impl AsRef<Path>, json_path: impl AsRef<Path>) -> Result<()> {
     let json_data = std::fs::read_to_string(json_path.as_ref())?;
-    let ir: XiIR = serde_json::from_str(&json_data)?;
+    let ir: OxtIR = serde_json::from_str(&json_data)?;
     create_from_ir(out_path, &ir)
 }
 
 // ── DOCX ─────────────────────────────────────────────────────────────────────
 
-fn create_docx(path: &Path, ir: &XiIR) -> Result<()> {
+fn create_docx(path: &Path, ir: &OxtIR) -> Result<()> {
     let file = std::fs::File::create(path)?;
     let mut zip = zip::ZipWriter::new(file);
     let opts = zip::write::SimpleFileOptions::default()
@@ -95,7 +98,7 @@ fn create_docx(path: &Path, ir: &XiIR) -> Result<()> {
     Ok(())
 }
 
-fn write_docx_body<W: Write>(w: &mut W, ir: &XiIR) -> std::io::Result<()> {
+fn write_docx_body<W: Write>(w: &mut W, ir: &OxtIR) -> std::io::Result<()> {
     write!(w, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
             xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
@@ -192,7 +195,7 @@ fn write_docx_table<W: Write>(w: &mut W, rows: &[Vec<String>]) -> std::io::Resul
 
 // ── XLSX ─────────────────────────────────────────────────────────────────────
 
-fn create_xlsx(path: &Path, ir: &XiIR) -> Result<()> {
+fn create_xlsx(path: &Path, ir: &OxtIR) -> Result<()> {
     let file = std::fs::File::create(path)?;
     let mut zip = zip::ZipWriter::new(file);
     let opts = zip::write::SimpleFileOptions::default()
@@ -305,7 +308,7 @@ fn create_xlsx(path: &Path, ir: &XiIR) -> Result<()> {
 
 // ── PPTX ─────────────────────────────────────────────────────────────────────
 
-fn create_pptx(path: &Path, ir: &XiIR) -> Result<()> {
+fn create_pptx(path: &Path, ir: &OxtIR) -> Result<()> {
     let file = std::fs::File::create(path)?;
     let mut zip = zip::ZipWriter::new(file);
     let opts = zip::write::SimpleFileOptions::default()
@@ -432,6 +435,179 @@ fn write_pptx_textbox<W: Write>(w: &mut W, text: &str, title: bool, shape_id: u3
     Ok(())
 }
 
+
+// ── ODF ─────────────────────────────────────────────────────────────────────
+
+fn create_odf_package(path: &Path, content_xml: &str, mimetype: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let file = std::fs::File::create(path)?;
+    let mut zip = zip::ZipWriter::new(file);
+
+    // mimetype: primer entry, STORED, sin compresión
+    let mime_opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored);
+    zip.start_file("mimetype", mime_opts)?;
+    zip.write_all(mimetype.as_bytes())?;
+
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    // META-INF/manifest.xml
+    zip.start_file("META-INF/manifest.xml", opts.clone())?;
+    write!(zip, r#"<?xml version="1.0" encoding="UTF-8"?>
+<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"
+  manifest:version="1.2">
+  <manifest:file-entry manifest:full-path="/" manifest:version="1.2"
+    manifest:media-type="{mime_type}"/>
+  <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
+</manifest:manifest>"#, mime_type = mimetype)?;
+
+    // content.xml
+    zip.start_file("content.xml", opts.clone())?;
+    zip.write_all(content_xml.as_bytes())?;
+
+    zip.finish()?;
+    Ok(())
+}
+
+fn create_odt(path: &Path, ir: &OxtIR) -> Result<()> {
+    let mut xml = String::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-content
+  xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+  xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+  xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0"
+  office:version="1.2">
+  <office:body>
+    <office:text>"#);
+
+    for section in &ir.sections {
+        if let Some(ref title) = section.title {
+            xml.push_str(&format!(r#"<text:h text:outline-level="1">{}</text:h>"#, escape_odf(title)));
+        }
+        for element in &section.elements {
+            match element {
+                Element::Heading { level, text } => {
+                    xml.push_str(&format!(r#"<text:h text:outline-level="{level}">{}</text:h>"#, escape_odf(text)));
+                }
+                Element::Paragraph { runs } => {
+                    let text: String = runs.iter().map(|r| r.text.as_str()).collect();
+                    xml.push_str(&format!(r#"<text:p>{}</text:p>"#, escape_odf(&text)));
+                }
+                Element::List { ordered: _, items } => {
+                    xml.push_str("<text:list>");
+                    for item in items {
+                        xml.push_str(&format!(r#"<text:list-item><text:p>{}</text:p></text:list-item>"#, escape_odf(item)));
+                    }
+                    xml.push_str("</text:list>");
+                }
+                Element::Table { rows } => {
+                    xml.push_str("<table:table>");
+                    for row in rows {
+                        xml.push_str("<table:table-row>");
+                        for cell in row {
+                            xml.push_str(&format!(r#"<table:table-cell><text:p>{}</text:p></table:table-cell>"#, escape_odf(cell)));
+                        }
+                        xml.push_str("</table:table-row>");
+                    }
+                    xml.push_str("</table:table>");
+                }
+                _ => {}
+            }
+        }
+    }
+
+    xml.push_str("</office:text></office:body></office:document-content>");
+
+    create_odf_package(path, &xml, "application/vnd.oasis.opendocument.text")?;
+    Ok(())
+}
+
+fn create_ods(path: &Path, ir: &OxtIR) -> Result<()> {
+    let mut xml = String::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-content
+  xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+  xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+  xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0"
+  office:version="1.2">
+  <office:body>
+    <office:spreadsheet>"#);
+
+    for section in &ir.sections {
+        for element in &section.elements {
+            if let Element::Table { rows } = element {
+                xml.push_str("<table:table>");
+                for row in rows {
+                    xml.push_str("<table:table-row>");
+                    for cell in row {
+                        xml.push_str(&format!(r#"<table:table-cell><text:p>{}</text:p></table:table-cell>"#, escape_odf(cell)));
+                    }
+                    xml.push_str("</table:table-row>");
+                }
+                xml.push_str("</table:table>");
+            }
+        }
+    }
+
+    xml.push_str("</office:spreadsheet></office:body></office:document-content>");
+
+    create_odf_package(path, &xml, "application/vnd.oasis.opendocument.spreadsheet")?;
+    Ok(())
+}
+
+fn create_odp(path: &Path, ir: &OxtIR) -> Result<()> {
+    let mut xml = String::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-content
+  xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+  xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+  xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"
+  xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0"
+  office:version="1.2">
+  <office:body>
+    <office:presentation>"#);
+
+    for section in &ir.sections {
+        xml.push_str("<draw:page>");
+        if let Some(ref title) = section.title {
+            xml.push_str(r#"<draw:frame><draw:text-box>"#);
+            xml.push_str(&format!(r#"<text:p>{}</text:p>"#, escape_odf(title)));
+            xml.push_str(r#"</draw:text-box></draw:frame>"#);
+        }
+        for element in &section.elements {
+            xml.push_str(r#"<draw:frame><draw:text-box>"#);
+            match element {
+                Element::Heading { text, .. } => {
+                    xml.push_str(&format!(r#"<text:p>{}</text:p>"#, escape_odf(text)));
+                }
+                Element::Paragraph { runs } => {
+                    let text: String = runs.iter().map(|r| r.text.as_str()).collect();
+                    xml.push_str(&format!(r#"<text:p>{}</text:p>"#, escape_odf(&text)));
+                }
+                Element::List { items, .. } => {
+                    for item in items {
+                        xml.push_str(&format!(r#"<text:p>• {}</text:p>"#, escape_odf(item)));
+                    }
+                }
+                _ => {}
+            }
+            xml.push_str(r#"</draw:text-box></draw:frame>"#);
+        }
+        xml.push_str("</draw:page>");
+    }
+
+    xml.push_str("</office:presentation></office:body></office:document-content>");
+
+    create_odf_package(path, &xml, "application/vnd.oasis.opendocument.presentation")?;
+    Ok(())
+}
+
+fn escape_odf(s: &str) -> String {
+    s.replace('&', "&amp;")
+     .replace('<', "&lt;")
+     .replace('>', "&gt;")
+     .replace('"', "&quot;")
+     .replace('\'', "&apos;")
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Convertir número de columna (0-indexed) a referencia Excel (A, B, ..., Z, AA, AB...)
@@ -477,7 +653,7 @@ mod tests {
     fn test_create_docx_roundtrip() {
         use std::io::Read;
 
-        let ir = XiIR {
+        let ir = OxtIR {
             metadata: Metadata::default(),
             sections: vec![
                 Section {
@@ -513,6 +689,54 @@ mod tests {
         assert!(text.contains("Hola mundo"));
         // Table cell parsing has a known bug in the reader
         // assert!(text.contains("A"));
+
+        // Limpiar
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_create_odt_roundtrip() {
+        let ir = OxtIR {
+            metadata: Metadata::default(),
+            sections: vec![
+                Section {
+                    title: None,
+                    elements: vec![
+                        Element::Heading { level: 1, text: "Título ODT".into() },
+                        Element::Paragraph { runs: vec![Run::plain("Párrafo de prueba")] },
+                        Element::List { ordered: false, items: vec!["A".into(), "B".into()] },
+                        Element::Table { rows: vec![
+                            vec!["X".into(), "Y".into()],
+                            vec!["1".into(), "2".into()],
+                        ]},
+                    ],
+                },
+            ],
+        };
+
+        let dir = std::env::temp_dir().join("oxt_test_odf");
+        let _ = std::fs::create_dir_all(&dir);
+        let odt_path = dir.join("test.odt");
+
+        create_from_ir(&odt_path, &ir).unwrap();
+
+        // Verificar estructura ODF
+        let file = std::fs::File::open(&odt_path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert!(archive.by_name("mimetype").is_ok());
+        assert!(archive.by_name("content.xml").is_ok());
+        assert!(archive.by_name("META-INF/manifest.xml").is_ok());
+
+        // Verificar mimetype
+        let mut mime = String::new();
+        archive.by_name("mimetype").unwrap().read_to_string(&mut mime).unwrap();
+        assert_eq!(mime.trim(), "application/vnd.oasis.opendocument.text");
+
+        // Roundtrip con nuestro reader
+        let doc = crate::Document::open(&odt_path).unwrap();
+        let text = doc.plain_text();
+        assert!(text.contains("Título ODT"), "debe tener heading, obtuve: {text:?}");
+        assert!(text.contains("Párrafo de prueba"), "debe tener párrafo");
 
         // Limpiar
         let _ = std::fs::remove_dir_all(&dir);
