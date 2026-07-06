@@ -25,6 +25,7 @@ pub mod pptx;
 pub mod legacy;
 pub mod odf;
 pub mod roundtrip;
+pub mod google;
 
 use std::path::Path;
 
@@ -56,6 +57,9 @@ pub enum Error {
 
     #[error("ODF error: {0}")]
     Odf(#[from] odf::OdfError),
+
+    #[error("Google error: {0}")]
+    Google(#[from] google::GoogleError),
 
     #[error("Roundtrip error: {0}")]
     Roundtrip(#[from] roundtrip::RoundtripError),

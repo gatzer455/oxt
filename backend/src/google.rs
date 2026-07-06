@@ -1,0 +1,809 @@
+//! # Google Workspace — conector REST para Docs, Sheets y Slides
+//!
+//! Permite leer y escribir documentos de Google Workspace a través de la
+//! API REST oficial, mapeando todo al OxtIR.
+//!
+//! ## Autenticación
+//!
+//! ```bash
+//! oxt google auth
+//! ```
+//!
+//! Abre el navegador para autorizar la aplicación. El token se guarda en
+//! `~/.config/oxt/google-tokens.json`.
+//!
+//! ## Uso
+//!
+//! ```bash
+//! oxt google docs:read <document-id>
+//! oxt google docs:create "Título"
+//! oxt google docs:update <document-id> --from ir.json
+//! ```
+
+use std::path::PathBuf;
+
+/// Error del módulo Google.
+#[derive(Debug, thiserror::Error)]
+pub enum GoogleError {
+    #[error("HTTP error: {0}")]
+    Http(String),
+
+    #[error("API error: {0}")]
+    Api(String),
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("Autenticación requerida: ejecute 'oxt google auth' primero")]
+    AuthRequired,
+
+    #[error("Autenticación fallida: {0}")]
+    AuthFailed(String),
+
+    #[error("{0}")]
+    Other(String),
+}
+
+#[cfg(feature = "google")]
+pub type Result<T> = std::result::Result<T, GoogleError>;
+
+#[cfg(not(feature = "google"))]
+pub type Result<T> = std::result::Result<T, GoogleError>;
+
+/// Token de acceso y refresh para Google APIs.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GoogleTokens {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    pub expires_at: Option<i64>, // UNIX timestamp
+    pub client_id: String,
+    pub client_secret: String,
+}
+
+/// Estado de autenticación.
+pub enum AuthStatus {
+    Authenticated,
+    NotAuthenticated,
+    Error(String),
+}
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+/// Ruta al archivo de configuración de oxt.
+fn config_dir() -> PathBuf {
+    let base = std::env::var("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .unwrap_or_else(|_| ".".into());
+            PathBuf::from(home).join(".config")
+        });
+    base.join("oxt")
+}
+
+/// Ruta al archivo de tokens.
+fn tokens_path() -> PathBuf {
+    config_dir().join("google-tokens.json")
+}
+
+/// Cargar tokens guardados.
+pub fn load_tokens() -> Result<GoogleTokens> {
+    let path = tokens_path();
+    if !path.exists() {
+        return Err(GoogleError::AuthRequired);
+    }
+    let data = std::fs::read_to_string(&path)?;
+    let tokens: GoogleTokens = serde_json::from_str(&data)?;
+
+    // Verificar si el token expiró
+    if let Some(exp) = tokens.expires_at {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        if now >= exp - 60 {
+            // Token expirado o por expirar — refrescar
+            return refresh_tokens(&tokens);
+        }
+    }
+
+    Ok(tokens)
+}
+
+/// Refrescar token de acceso usando refresh_token.
+fn refresh_tokens(old: &GoogleTokens) -> Result<GoogleTokens> {
+    let refresh = old.refresh_token.as_deref()
+        .ok_or_else(|| GoogleError::AuthFailed("No hay refresh_token".into()))?;
+
+    #[cfg(feature = "google")]
+    {
+        let params = serde_json::json!({
+            "client_id": old.client_id,
+            "client_secret": old.client_secret,
+            "refresh_token": refresh,
+            "grant_type": "refresh_token",
+        });
+
+        let resp: serde_json::Value = ureq::post("https://oauth2.googleapis.com/token")
+            .set("Content-Type", "application/json")
+            .send_json(&params)
+            .map_err(|e| GoogleError::Http(e.to_string()))?
+            .into_json()
+            .map_err(|e| GoogleError::Json(e))?;
+
+        let new_token = resp.get("access_token")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| GoogleError::AuthFailed("No access_token en respuesta".into()))?;
+
+        let expires_in = resp.get("expires_in")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(3600);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let tokens = GoogleTokens {
+            access_token: new_token.to_string(),
+            refresh_token: old.refresh_token.clone(),
+            expires_at: Some(now + expires_in),
+            client_id: old.client_id.clone(),
+            client_secret: old.client_secret.clone(),
+        };
+
+        save_tokens(&tokens)?;
+        return Ok(tokens);
+    }
+
+    #[cfg(not(feature = "google"))]
+    Err(GoogleError::Other("Google feature no habilitada".into()))
+}
+
+/// Guardar tokens a disco.
+fn save_tokens(tokens: &GoogleTokens) -> Result<()> {
+    let dir = config_dir();
+    std::fs::create_dir_all(&dir)?;
+    let data = serde_json::to_string_pretty(tokens)?;
+    std::fs::write(tokens_path(), data)?;
+    Ok(())
+}
+
+/// Iniciar flujo OAuth2: abre navegador, recibe redirect en localhost.
+///
+/// Requiere credenciales de GCP: ir a https://console.cloud.google.com/apis/credentials
+/// Crear una aplicación de escritorio con redirect URI: http://localhost:8080
+pub fn authenticate(client_id: &str, client_secret: &str) -> Result<AuthStatus> {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+
+    let redirect_port = 8080;
+    let redirect_uri = format!("http://localhost:{redirect_port}");
+
+    // Construir URL de autorización
+    let auth_url = format!(
+        "https://accounts.google.com/o/oauth2/v2/auth?\
+         client_id={client_id}&\
+         redirect_uri={redirect_uri}&\
+         response_type=code&\
+         scope=https://www.googleapis.com/auth/documents%20\
+                 https://www.googleapis.com/auth/spreadsheets%20\
+                 https://www.googleapis.com/auth/presentations&\
+         access_type=offline&\
+         prompt=consent"
+    );
+
+    // Abrir navegador
+    println!("Abriendo navegador para autorizar...");
+    println!("Si no se abre, visita: {auth_url}");
+
+    // Intentar abrir el navegador
+    let _ = open_browser(&auth_url);
+
+    // Escuchar el redirect en localhost
+    let listener = TcpListener::bind(format!("127.0.0.1:{redirect_port}"))
+        .map_err(|e| GoogleError::AuthFailed(format!("No se pudo abrir puerto {redirect_port}: {e}")))?;
+
+    println!("Esperando autorización en http://localhost:{redirect_port}...");
+
+    let code = match listener.accept() {
+        Ok((mut stream, _)) => {
+            let mut buffer = [0; 8192];
+            let n = stream.read(&mut buffer).map_err(|e| {
+                GoogleError::AuthFailed(format!("Error leyendo redirect: {e}"))
+            })?;
+            let request = String::from_utf8_lossy(&buffer[..n]);
+
+            // Extraer el código de autorización de la URL
+            let code = request
+                .lines()
+                .find(|line| line.starts_with("GET /?code=") || line.starts_with("GET /?authuser="))
+                .and_then(|line| {
+                    let params = line.split_whitespace().nth(1)?;
+                    let code_start = params.find("?code=")?;
+                    let after_code = &params[code_start + 6..];
+                    let code_end = after_code.find('&').unwrap_or(after_code.len());
+                    Some(&after_code[..code_end])
+                });
+
+            // Responder al navegador
+            let response = if code.is_some() {
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n\
+                 <html><body><h1>✅ Autorizado</h1>\
+                 <p>Ya puedes cerrar esta ventana.</p></body></html>"
+            } else {
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\n\r\n\
+                 <html><body><h1>❌ Error</h1>\
+                 <p>No se recibió código de autorización.</p></body></html>"
+            };
+            stream.write_all(response.as_bytes()).ok();
+
+            code.map(|c| c.to_string())
+        }
+        Err(e) => return Err(GoogleError::AuthFailed(format!("Error en redirect: {e}"))),
+    };
+
+    let code = code.ok_or_else(|| GoogleError::AuthFailed("No se recibió código".into()))?;
+
+    // Intercambiar código por tokens
+    exchange_code_for_tokens(&code, client_id, client_secret, &redirect_uri)?;
+
+    Ok(AuthStatus::Authenticated)
+}
+
+/// Intercambiar código de autorización por access_token + refresh_token.
+fn exchange_code_for_tokens(
+    code: &str,
+    client_id: &str,
+    client_secret: &str,
+    redirect_uri: &str,
+) -> Result<GoogleTokens> {
+    #[cfg(feature = "google")]
+    {
+        let params = serde_json::json!({
+            "code": code,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        });
+
+        let resp: serde_json::Value = ureq::post("https://oauth2.googleapis.com/token")
+            .set("Content-Type", "application/json")
+            .send_json(&params)
+            .map_err(|e| GoogleError::Http(e.to_string()))?
+            .into_json()
+            .map_err(|e| GoogleError::Json(e))?;
+
+        let access_token = resp.get("access_token")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| GoogleError::AuthFailed("No access_token".into()))?;
+
+        let refresh_token = resp.get("refresh_token")
+            .and_then(|v| v.as_str());
+
+        let expires_in = resp.get("expires_in")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(3600);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let tokens = GoogleTokens {
+            access_token: access_token.to_string(),
+            refresh_token: refresh_token.map(|s| s.to_string()),
+            expires_at: Some(now + expires_in),
+            client_id: client_id.to_string(),
+            client_secret: client_secret.to_string(),
+        };
+
+        save_tokens(&tokens)?;
+        println!("✅ Autenticación exitosa");
+        Ok(tokens)
+    }
+
+    #[cfg(not(feature = "google"))]
+    Err(GoogleError::Other("Google feature no habilitada".into()))
+}
+
+#[cfg(target_os = "macos")]
+fn open_browser(url: &str) -> Result<()> {
+    std::process::Command::new("open").arg(url).spawn().ok();
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn open_browser(url: &str) -> Result<()> {
+    std::process::Command::new("xdg-open").arg(url).spawn().ok();
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn open_browser(url: &str) -> Result<()> {
+    std::process::Command::new("cmd").args(["/c", "start", url]).spawn().ok();
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn open_browser(_url: &str) -> Result<()> {
+    // No-op en plataformas no soportadas
+    Ok(())
+}
+
+// ── Google Docs Reader ────────────────────────────────────────────────────────
+
+/// Leer un Google Doc y devolverlo como OxtIR.
+#[cfg(feature = "google")]
+pub fn read_doc(document_id: &str) -> Result<crate::ir::OxtIR> {
+    let tokens = load_tokens()?;
+    let url = format!(
+        "https://docs.googleapis.com/v1/documents/{document_id}"
+    );
+
+    let resp: serde_json::Value = ureq::get(&url)
+        .set("Authorization", &format!("Bearer {}", tokens.access_token))
+        .call()
+        .map_err(|e| GoogleError::Http(e.to_string()))?
+        .into_json()
+        .map_err(|e| GoogleError::Json(e))?;
+
+    doc_to_ir(&resp)
+}
+
+/// Convertir respuesta JSON de Google Docs a OxtIR.
+#[cfg(feature = "google")]
+fn doc_to_ir(doc: &serde_json::Value) -> Result<crate::ir::OxtIR> {
+    use crate::ir::{Element, Metadata, Run, Section};
+
+    let title = doc.get("title")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let mut elements: Vec<Element> = Vec::new();
+
+    // Recorrer body.content[]
+    if let Some(content) = doc.pointer("/body/content") {
+        if let Some(items) = content.as_array() {
+            for item in items {
+                if let Some(elem) = parse_structural_element(item) {
+                    elements.push(elem);
+                }
+            }
+        }
+    }
+
+    let ir = crate::ir::OxtIR {
+        metadata: Metadata {
+            title,
+            subject: None,
+            creator: None,
+            page_count: None,
+            word_count: None,
+        },
+        sections: vec![Section {
+            title: None,
+            elements,
+        }],
+    };
+
+    Ok(ir)
+}
+
+/// Parsear un structural element de Google Docs a Element.
+#[cfg(feature = "google")]
+fn parse_structural_element(item: &serde_json::Value) -> Option<Element> {
+    if let Some(para) = item.get("paragraph") {
+        return parse_paragraph(para);
+    }
+    if let Some(table) = item.get("table") {
+        return parse_table(table);
+    }
+    if let Some(_section_break) = item.get("sectionBreak") {
+        // Ignorar saltos de sección
+    }
+    None
+}
+
+/// Parsear un párrafo de Google Docs.
+#[cfg(feature = "google")]
+fn parse_paragraph(para: &serde_json::Value) -> Option<Element> {
+    use crate::ir::Run;
+
+    let mut runs: Vec<Run> = Vec::new();
+
+    if let Some(elements) = para.get("elements") {
+        if let Some(items) = elements.as_array() {
+            for item in items {
+                if let Some(text_run) = item.get("textRun") {
+                    let content = text_run.get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    // Saltar nuevos items de lista (separadores)
+                    if content == "\n" && runs.is_empty() {
+                        continue;
+                    }
+
+                    let mut run = Run::plain(&content);
+
+                    // Parsear formato del texto
+                    if let Some(style) = text_run.get("textStyle") {
+                        run.bold = style.get("bold").and_then(|v| v.as_bool());
+                        run.italic = style.get("italic").and_then(|v| v.as_bool());
+                        run.underline = style.get("underline").and_then(|v| v.as_bool());
+                        run.strikethrough = style.get("strikethrough").and_then(|v| v.as_bool());
+
+                        // Link
+                        if let Some(link) = style.get("link") {
+                            run.hyperlink = link.get("url").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        }
+
+                        // Color
+                        if let Some(fg) = style.get("foregroundColor") {
+                            if let Some(color) = fg.get("color") {
+                                run.color = rgb_color_to_hex(color);
+                            }
+                        }
+
+                        // Font size en half-points (Google Docs usa points * 2.67...)
+                        // Realmente Google usa "weightedFontFamily.size" en magnitud (puntos * 2.67 aprox)
+                        // No es straightforward, lo omitimos por ahora
+                    }
+
+                    runs.push(run);
+                }
+            }
+        }
+    }
+
+    if runs.is_empty() {
+        return None;
+    }
+
+    // Detectar heading por namedStyleType
+    let style_name = para.get("paragraphStyle")
+        .and_then(|s| s.get("namedStyleType"))
+        .and_then(|v| v.as_str());
+
+    if let Some(name) = style_name {
+        if let Some(level) = heading_level_from_style(name) {
+            let text: String = runs.iter().map(|r| r.text.as_str()).collect();
+            return Some(Element::Heading {
+                level,
+                text: text.trim().to_string(),
+            });
+        }
+    }
+
+    // Detectar bullets
+    if para.get("bullet").is_some() {
+        // Es parte de una lista — lo tratamos como párrafo normal
+        // (las listas se agrupan después)
+    }
+
+    Some(Element::Paragraph { runs })
+}
+
+/// Parsear una tabla de Google Docs.
+#[cfg(feature = "google")]
+fn parse_table(table: &serde_json::Value) -> Option<Element> {
+    let mut rows: Vec<Vec<String>> = Vec::new();
+
+    if let Some(table_rows) = table.get("tableRows") {
+        if let Some(items) = table_rows.as_array() {
+            for row_item in items {
+                let mut row: Vec<String> = Vec::new();
+                if let Some(cells) = row_item.get("tableCells") {
+                    if let Some(cell_array) = cells.as_array() {
+                        for cell in cell_array {
+                            let cell_text = extract_cell_text(cell);
+                            row.push(cell_text);
+                        }
+                    }
+                }
+                if !row.is_empty() {
+                    rows.push(row);
+                }
+            }
+        }
+    }
+
+    if rows.is_empty() {
+        return None;
+    }
+
+    Some(Element::Table { rows })
+}
+
+/// Extraer texto de una celda de tabla.
+#[cfg(feature = "google")]
+fn extract_cell_text(cell: &serde_json::Value) -> String {
+    let mut text = String::new();
+    if let Some(content) = cell.get("content") {
+        if let Some(items) = content.as_array() {
+            for item in items {
+                if let Some(para) = item.get("paragraph") {
+                    if let Some(elements) = para.get("elements") {
+                        if let Some(el_array) = elements.as_array() {
+                            for el in el_array {
+                                if let Some(text_run) = el.get("textRun") {
+                                    if let Some(content) = text_run.get("content") {
+                                        text.push_str(content.as_str().unwrap_or(""));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    text.trim().to_string()
+}
+
+/// Convertir namedStyleType a nivel de heading.
+fn heading_level_from_style(name: &str) -> Option<u8> {
+    match name {
+        "TITLE" => Some(1),
+        "SUBTITLE" => Some(2),
+        "HEADING_1" => Some(1),
+        "HEADING_2" => Some(2),
+        "HEADING_3" => Some(3),
+        "HEADING_4" => Some(4),
+        "HEADING_5" => Some(5),
+        "HEADING_6" => Some(6),
+        _ => None,
+    }
+}
+
+/// Convertir RGB color de Google Docs a hex.
+fn rgb_color_to_hex(color: &serde_json::Value) -> Option<String> {
+    let r = color.get("rgbColor")?.get("red")?.as_f64()?;
+    let g = color.get("rgbColor")?.get("green")?.as_f64()?;
+    let b = color.get("rgbColor")?.get("blue")?.as_f64()?;
+
+    let ri = (r * 255.0) as u8;
+    let gi = (g * 255.0) as u8;
+    let bi = (b * 255.0) as u8;
+
+    Some(format!("{ri:02X}{gi:02X}{bi:02X}"))
+}
+
+// ── Google Docs Writer ────────────────────────────────────────────────────────
+
+/// Escribir contenido de un OxtIR a un Google Doc existente.
+///
+/// Estrategia: borra todo el contenido del doc y lo reemplaza con el IR.
+#[cfg(feature = "google")]
+pub fn write_doc(document_id: &str, ir: &crate::ir::OxtIR) -> Result<()> {
+    use crate::ir::Element;
+
+    let tokens = load_tokens()?;
+    let url = format!(
+        "https://docs.googleapis.com/v1/documents/{document_id}:batchUpdate"
+    );
+
+    // Construir requests de batchUpdate
+    let mut requests: Vec<serde_json::Value> = Vec::new();
+
+    // 1. Borrar todo el contenido existente
+    requests.push(serde_json::json!({
+        "deleteContentRange": {
+            "range": {
+                "startIndex": 1,
+                "endIndex": get_doc_end_index(document_id)?
+            }
+        }
+    }));
+
+    // 2. Insertar contenido desde OxtIR
+    let mut text = String::new();
+    for section in &ir.sections {
+        if let Some(ref title) = section.title {
+            text.push_str(&title);
+            text.push('\n');
+        }
+        for element in &section.elements {
+            match element {
+                Element::Heading { level: _, text: t } => {
+                    text.push_str(t);
+                    text.push('\n');
+                }
+                Element::Paragraph { runs } => {
+                    for run in runs {
+                        text.push_str(&run.text);
+                    }
+                    text.push('\n');
+                }
+                Element::List { items, .. } => {
+                    for item in items {
+                        text.push_str(&format!("• {item}\n"));
+                    }
+                }
+                Element::Table { rows } => {
+                    for row in rows {
+                        text.push_str(&row.join("\t"));
+                        text.push('\n');
+                    }
+                    text.push('\n');
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Google Docs usa índices: el documento empieza en 1
+    requests.push(serde_json::json!({
+        "insertText": {
+            "location": { "index": 1 },
+            "text": text
+        }
+    }));
+
+    let body = serde_json::json!({ "requests": requests });
+
+    let _resp: serde_json::Value = ureq::post(&url)
+        .set("Authorization", &format!("Bearer {}", tokens.access_token))
+        .set("Content-Type", "application/json")
+        .send_json(&body)
+        .map_err(|e| GoogleError::Http(e.to_string()))?
+        .into_json()
+        .map_err(|e| GoogleError::Json(e))?;
+
+    Ok(())
+}
+
+/// Obtener el último índice del documento (para borrar contenido).
+#[cfg(feature = "google")]
+fn get_doc_end_index(document_id: &str) -> Result<i64> {
+    let tokens = load_tokens()?;
+    let url = format!(
+        "https://docs.googleapis.com/v1/documents/{document_id}"
+    );
+
+    let resp: serde_json::Value = ureq::get(&url)
+        .set("Authorization", &format!("Bearer {}", tokens.access_token))
+        .call()
+        .map_err(|e| GoogleError::Http(e.to_string()))?
+        .into_json()
+        .map_err(|e| GoogleError::Json(e))?;
+
+    // El índice final es el último content[].endIndex
+    let end_index = resp.pointer("/body/content")
+        .and_then(|c| c.as_array())
+        .and_then(|arr| arr.last())
+        .and_then(|last| last.get("endIndex"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(2);
+
+    Ok(end_index)
+}
+
+/// Crear un nuevo Google Doc en blanco.
+#[cfg(feature = "google")]
+pub fn create_doc(title: &str) -> Result<String> {
+    let tokens = load_tokens()?;
+
+    let body = serde_json::json!({
+        "title": title,
+    });
+
+    let resp: serde_json::Value = ureq::post("https://docs.googleapis.com/v1/documents")
+        .set("Authorization", &format!("Bearer {}", tokens.access_token))
+        .set("Content-Type", "application/json")
+        .send_json(&body)
+        .map_err(|e| GoogleError::Http(e.to_string()))?
+        .into_json()
+        .map_err(|e| GoogleError::Json(e))?;
+
+    let doc_id = resp.get("documentId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| GoogleError::Api("No documentId en respuesta".into()))?;
+
+    Ok(doc_id.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_heading_level_from_style() {
+        assert_eq!(heading_level_from_style("TITLE"), Some(1));
+        assert_eq!(heading_level_from_style("HEADING_1"), Some(1));
+        assert_eq!(heading_level_from_style("HEADING_3"), Some(3));
+        assert_eq!(heading_level_from_style("NORMAL_TEXT"), None);
+        assert_eq!(heading_level_from_style("SUBTITLE"), Some(2));
+    }
+
+    #[test]
+    fn test_rgb_color_to_hex() {
+        let color = serde_json::json!({
+            "rgbColor": { "red": 1.0, "green": 0.0, "blue": 0.0 }
+        });
+        assert_eq!(rgb_color_to_hex(&color), Some("FF0000".into()));
+
+        let color = serde_json::json!({
+            "rgbColor": { "red": 0.5, "green": 0.5, "blue": 0.5 }
+        });
+        assert_eq!(rgb_color_to_hex(&color), Some("7F7F7F".into()));
+    }
+
+    #[test]
+    fn test_doc_to_ir_basic() {
+        let doc_json = serde_json::json!({
+            "title": "Test Doc",
+            "body": {
+                "content": [
+                    {
+                        "paragraph": {
+                            "elements": [
+                                {
+                                    "textRun": {
+                                        "content": "Hello World",
+                                        "textStyle": { "bold": true }
+                                    }
+                                }
+                            ],
+                            "paragraphStyle": {
+                                "namedStyleType": "HEADING_1"
+                            }
+                        }
+                    },
+                    {
+                        "paragraph": {
+                            "elements": [
+                                {
+                                    "textRun": {
+                                        "content": "Normal paragraph"
+                                    }
+                                }
+                            ],
+                            "paragraphStyle": {
+                                "namedStyleType": "NORMAL_TEXT"
+                            }
+                        }
+                    }
+                ]
+            }
+        });
+
+        #[cfg(feature = "google")]
+        {
+            let ir = doc_to_ir(&doc_json).unwrap();
+            assert_eq!(ir.sections.len(), 1);
+            assert_eq!(ir.metadata.title.as_deref(), Some("Test Doc"));
+            assert_eq!(ir.sections[0].elements.len(), 2);
+
+            // Primer elemento: heading
+            match &ir.sections[0].elements[0] {
+                crate::ir::Element::Heading { level, text } => {
+                    assert_eq!(*level, 1);
+                    assert_eq!(text, "Hello World");
+                }
+                _ => panic!("Expected Heading"),
+            }
+
+            // Segundo elemento: paragraph
+            match &ir.sections[0].elements[1] {
+                crate::ir::Element::Paragraph { runs } => {
+                    assert!(runs[0].bold.unwrap_or(false));
+                }
+                _ => panic!("Expected Paragraph"),
+            }
+        }
+
+        // Sin feature google, solo probar que los helpers funcionan
+        #[cfg(not(feature = "google"))]
+        {
+            assert_eq!(heading_level_from_style("HEADING_1"), Some(1));
+        }
+    }
+}
