@@ -39,6 +39,16 @@ enum Command {
         json: bool,
     },
 
+    /// Crear un documento desde un archivo JSON (IR).
+    Create {
+        /// Ruta de salida (ej: reporte.docx)
+        path: String,
+
+        /// Archivo JSON con el IR
+        #[arg(long)]
+        from: String,
+    },
+
     /// Reemplazar texto en un documento.
     Edit {
         /// Ruta al archivo
@@ -92,6 +102,16 @@ fn main() {
                 }
             }
         }
+        Command::Create { path, from } => {
+            match oxt_backend::create::create_from_json(&path, &from) {
+                Ok(()) => println!("Creado: {path}"),
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
         Command::Edit { path, old, new, json } => {
             match oxt_backend::edit::replace_text(&path, &old, &new) {
                 Ok(result) => {

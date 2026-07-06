@@ -19,6 +19,7 @@ pub mod docx;
 pub mod ir;
 pub mod opc;
 pub mod xlsx;
+pub mod create;
 pub mod edit;
 pub mod pptx;
 pub mod legacy;
@@ -47,6 +48,9 @@ pub enum Error {
 
     #[error("Edit error: {0}")]
     Edit(#[from] edit::EditError),
+
+    #[error("Create error: {0}")]
+    Create(#[from] create::CreateError),
 
     #[error("OPC error: {0}")]
     Opc(#[from] opc::OpcError),
