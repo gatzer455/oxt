@@ -14,7 +14,50 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum GoogleCommand {
+    /// Autenticar con Google Workspace
+    Auth {
+        /// Client ID de GCP
+        #[arg(long)]
+        client_id: String,
+        /// Client Secret de GCP
+        #[arg(long)]
+        client_secret: String,
+    },
+    /// Leer un Google Doc
+    #[command(name = "docs:read")]
+    DocsRead {
+        /// ID del documento
+        document_id: String,
+        /// Formato de salida: text, markdown, ir
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Crear un Google Doc
+    #[command(name = "docs:create")]
+    DocsCreate {
+        /// Título del documento
+        title: String,
+    },
+    /// Actualizar un Google Doc desde un archivo IR
+    #[command(name = "docs:update")]
+    DocsUpdate {
+        /// ID del documento
+        document_id: String,
+        /// Archivo JSON con el OxtIR
+        #[arg(long)]
+        from: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum Command {
+    /// Comandos de Google Workspace
+    #[command(name = "google")]
+    Google {
+        #[command(subcommand)]
+        command: GoogleCommand,
+    },
     /// Leer un documento y mostrarlo en el formato indicado.
     Read {
         /// Ruta al archivo
@@ -68,10 +111,100 @@ enum Command {
     },
 }
 
+fn handle_google(cmd: GoogleCommand) {
+    match cmd {
+        GoogleCommand::Auth { client_id, client_secret } => {
+            match oxt_backend::google::authenticate(&client_id, &client_secret) {
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        GoogleCommand::DocsRead { document_id, format } => {
+            #[cfg(feature = "google")]
+            {
+                match oxt_backend::google::read_doc(&document_id) {
+                    Ok(ir) => {
+                        let output = match format.as_str() {
+                            "ir" => serde_json::to_string_pretty(&ir).unwrap_or_default(),
+                            "markdown" => ir.to_markdown(),
+                            _ => ir.plain_text(),
+                        };
+                        println!("{output}");
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            #[cfg(not(feature = "google"))]
+            {
+                eprintln!("Error: Google feature no habilitada. Compile con --features google");
+                std::process::exit(1);
+            }
+        }
+        GoogleCommand::DocsCreate { title } => {
+            #[cfg(feature = "google")]
+            {
+                match oxt_backend::google::create_doc(&title) {
+                    Ok(id) => println!("Creado: https://docs.google.com/document/d/{id}"),
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            #[cfg(not(feature = "google"))]
+            {
+                eprintln!("Error: Google feature no habilitada");
+                std::process::exit(1);
+            }
+        }
+        GoogleCommand::DocsUpdate { document_id, from } => {
+            #[cfg(feature = "google")]
+            {
+                let json_data = match std::fs::read_to_string(&from) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!("Error leyendo {from}: {e}");
+                        std::process::exit(1);
+                    }
+                };
+                let ir: oxt_backend::ir::OxtIR = match serde_json::from_str(&json_data) {
+                    Ok(ir) => ir,
+                    Err(e) => {
+                        eprintln!("Error parseando IR: {e}");
+                        std::process::exit(1);
+                    }
+                };
+                match oxt_backend::google::write_doc(&document_id, &ir) {
+                    Ok(_) => println!("Documento actualizado: {document_id}"),
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            #[cfg(not(feature = "google"))]
+            {
+                eprintln!("Error: Google feature no habilitada");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
 
     match cli.command {
+        Command::Google { command } => {
+            handle_google(command);
+        }
+
         Command::Read { path, format, json } => {
             match Document::open(&path) {
                 Ok(doc) => {
