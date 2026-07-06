@@ -164,7 +164,7 @@ fn write_docx_paragraph<W: Write>(w: &mut W, runs: &[Run], bold: Option<bool>) -
             write!(w, "</w:rPr>")?;
         }
 
-        write!(w, "<w:t>");
+        write!(w, "<w:t>")?;
         write_escaped(w, &run.text)?;
         write!(w, "</w:t></w:r>")?;
     }
@@ -200,14 +200,18 @@ fn create_xlsx(path: &Path, ir: &XiIR) -> Result<()> {
 
     // [Content_Types].xml
     zip.start_file("[Content_Types].xml", opts.clone())?;
+    let num_sheets = ir.sections.len();
+    let sheet_cts = (0..num_sheets).map(|i|
+        format!(r#"<Override PartName="/xl/worksheets/sheet{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>"#)
+    ).collect::<Vec<_>>().join("\n  ");
     write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
   <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  {sheet_cts}
   <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
-</Types>"#)?;
+</Types>"#, sheet_cts = sheet_cts)?;
 
     // _rels/.rels
     zip.start_file("_rels/.rels", opts.clone())?;
@@ -218,11 +222,14 @@ fn create_xlsx(path: &Path, ir: &XiIR) -> Result<()> {
 
     // xl/_rels/workbook.xml.rels
     zip.start_file("xl/_rels/workbook.xml.rels", opts.clone())?;
+    let sheet_rels: String = (0..num_sheets).map(|i|
+        format!(r#"<Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i}.xml"/>"#)
+    ).collect::<Vec<_>>().join("\n  ");
     write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
-</Relationships>"#)?;
+  {sheet_rels}
+  <Relationship Id="rId{sid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+</Relationships>"#, sheet_rels = sheet_rels, sid = num_sheets)?;
 
     // xl/workbook.xml
     zip.start_file("xl/workbook.xml", opts.clone())?;
@@ -232,8 +239,9 @@ fn create_xlsx(path: &Path, ir: &XiIR) -> Result<()> {
   <sheets>"#)?;
     for (i, section) in ir.sections.iter().enumerate() {
         let default_name = format!("Sheet{}", i + 1);
-        let name = section.title.as_deref().unwrap_or(&default_name);
-        write!(zip, r#"<sheet name="{name}" sheetId="{i}" r:id="rId1"/>"#)?;
+        let raw_name = section.title.as_deref().unwrap_or(&default_name);
+        let name = raw_name.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
+        write!(zip, r#"<sheet name="{name}" sheetId="{i}" r:id="rId{i}"/>"#)?;
     }
     write!(zip, r#"</sheets></workbook>"#)?;
 
@@ -258,25 +266,26 @@ fn create_xlsx(path: &Path, ir: &XiIR) -> Result<()> {
 <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="{count}" uniqueCount="{count}">"#,
         count = all_strings.len())?;
     for s in &all_strings {
-        write!(zip, "<si><t>");
+        write!(zip, "<si><t>")?;
         write_escaped(&mut zip, s)?;
         write!(zip, "</t></si>")?;
     }
     write!(zip, "</sst>")?;
 
-    // xl/worksheets/sheet1.xml
-    zip.start_file("xl/worksheets/sheet1.xml", opts.clone())?;
-    write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    // xl/worksheets/sheet{i}.xml — una por sección
+    for (sheet_idx, section) in ir.sections.iter().enumerate() {
+        let sheet_path = format!("xl/worksheets/sheet{sheet_idx}.xml");
+        zip.start_file(&sheet_path, opts.clone())?;
+        write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <sheetData>"#)?;
 
-    for section in &ir.sections {
         for element in &section.elements {
             if let Element::Table { rows } = element {
                 for (ri, row) in rows.iter().enumerate() {
                     write!(zip, r#"<row r="{}">"#, ri + 1)?;
                     for (ci, cell) in row.iter().enumerate() {
-                        let col = (b'A' + ci as u8) as char;
+                        let col = col_to_excel(ci);
                         if let Some(pos) = all_strings.iter().position(|s| s == cell) {
                             write!(zip, r#"<c r="{col}{r}" t="s"><v>{pos}</v></c>"#,
                                 r = ri + 1)?;
@@ -286,9 +295,9 @@ fn create_xlsx(path: &Path, ir: &XiIR) -> Result<()> {
                 }
             }
         }
-    }
 
-    write!(zip, r#"</sheetData></worksheet>"#)?;
+        write!(zip, r#"</sheetData></worksheet>"#)?;
+    }
 
     zip.finish()?;
     Ok(())
@@ -336,7 +345,8 @@ fn create_pptx(path: &Path, ir: &XiIR) -> Result<()> {
     zip.start_file("ppt/presentation.xml", opts.clone())?;
     write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
-                xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+                xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+                xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <p:sldIdLst>{}</p:sldIdLst>
   <p:sldSz cx="9144000" cy="6858000"/>
   <p:notesSz cx="6858000" cy="9144000"/>
@@ -361,18 +371,22 @@ fn create_pptx(path: &Path, ir: &XiIR) -> Result<()> {
       </p:nvGrpSpPr>
       <p:grpSpPr/>"#)?;
 
+        let mut shape_counter = 2u32;
         for element in &section.elements {
             match element {
                 Element::Heading { text, .. } => {
-                    write_pptx_textbox(&mut zip, text, true)?;
+                    write_pptx_textbox(&mut zip, text, true, shape_counter)?;
+                    shape_counter += 1;
                 }
                 Element::Paragraph { runs } => {
                     let text: String = runs.iter().map(|r| r.text.as_str()).collect();
-                    write_pptx_textbox(&mut zip, &text, false)?;
+                    write_pptx_textbox(&mut zip, &text, false, shape_counter)?;
+                    shape_counter += 1;
                 }
                 Element::List { items, .. } => {
                     for item in items {
-                        write_pptx_textbox(&mut zip, &format!("• {item}"), false)?;
+                        write_pptx_textbox(&mut zip, &format!("• {item}"), false, shape_counter)?;
+                            shape_counter += 1;
                     }
                 }
                 _ => {}
@@ -386,11 +400,11 @@ fn create_pptx(path: &Path, ir: &XiIR) -> Result<()> {
     Ok(())
 }
 
-fn write_pptx_textbox<W: Write>(w: &mut W, text: &str, title: bool) -> std::io::Result<()> {
+fn write_pptx_textbox<W: Write>(w: &mut W, text: &str, title: bool, shape_id: u32) -> std::io::Result<()> {
     let (x, y, w_val, h) = if title { ("457200", "274320", "8229600", "914400") } else { ("457200", "1371600", "8229600", "457200") };
     write!(w, r#"<p:sp>
   <p:nvSpPr>
-    <p:cNvPr id="0" name="TextBox"/>
+    <p:cNvPr id="{shape_id}" name="TextBox"/>
     <p:cNvSpPr txBox="1"/>
     <p:nvPr/>
   </p:nvSpPr>
@@ -419,6 +433,19 @@ fn write_pptx_textbox<W: Write>(w: &mut W, text: &str, title: bool) -> std::io::
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Convertir número de columna (0-indexed) a referencia Excel (A, B, ..., Z, AA, AB...)
+fn col_to_excel(mut col: usize) -> String {
+    let mut result = String::new();
+    loop {
+        let rem = col % 26;
+        result.insert(0, (b'A' + rem as u8) as char);
+        col /= 26;
+        if col == 0 { break; }
+        col -= 1;
+    }
+    result
+}
 
 fn write_escaped<W: Write>(w: &mut W, text: &str) -> std::io::Result<()> {
     for c in text.chars() {
