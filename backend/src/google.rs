@@ -198,6 +198,20 @@ pub fn authenticate_defaults() -> Result<AuthStatus> {
 pub fn authenticate(client_id: &str, client_secret: &str) -> Result<AuthStatus> {
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use base64::Engine as _;
+    use rand::Rng;
+
+    // PKCE: generar code_verifier y code_challenge
+    let verifier: String = rand::thread_rng()
+        .sample_iter(&rand::distributions::Alphanumeric)
+        .take(64)
+        .map(char::from)
+        .collect();
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(verifier.as_bytes());
+    let challenge_hash = hasher.finalize();
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(challenge_hash);
 
     let redirect_port = 8080;
     let redirect_uri = format!("http://localhost:{redirect_port}");
@@ -267,8 +281,8 @@ pub fn authenticate(client_id: &str, client_secret: &str) -> Result<AuthStatus> 
 
     let code = code.ok_or_else(|| GoogleError::AuthFailed("No se recibió código".into()))?;
 
-    // Intercambiar código por tokens
-    exchange_code_for_tokens(&code, client_id, client_secret, &redirect_uri)?;
+    // Intercambiar código por tokens (con PKCE)
+    exchange_code_for_tokens(&code, client_id, client_secret, &redirect_uri, &verifier)?;
 
     Ok(AuthStatus::Authenticated)
 }
@@ -279,6 +293,7 @@ fn exchange_code_for_tokens(
     client_id: &str,
     client_secret: &str,
     redirect_uri: &str,
+    code_verifier: &str,
 ) -> Result<GoogleTokens> {
     #[cfg(feature = "google")]
     {
@@ -288,6 +303,7 @@ fn exchange_code_for_tokens(
             "client_secret": client_secret,
             "redirect_uri": redirect_uri,
             "grant_type": "authorization_code",
+            "code_verifier": code_verifier,
         });
 
         let resp: serde_json::Value = ureq::post("https://oauth2.googleapis.com/token")
