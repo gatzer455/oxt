@@ -56,6 +56,14 @@ pub type Result<T> = std::result::Result<T, GoogleError>;
 #[cfg(not(feature = "google"))]
 pub type Result<T> = std::result::Result<T, GoogleError>;
 
+// ── Credenciales embebidas ─────────────────────────────────────────────────
+// Proyecto GCP: oxt. APIs: Docs, Sheets, Slides.
+// `oxt google auth` usa estas por defecto. Para credenciales propias:
+// `oxt google auth --client-id ... --client-secret ...`
+
+const DEFAULT_CLIENT_ID: &str = "327915843284-o2715l81t40re8568dineghb1t7kbqug.apps.googleusercontent.com";
+const DEFAULT_CLIENT_SECRET: &str = "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";
+
 /// Token de acceso y refresh para Google APIs.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GoogleTokens {
@@ -180,6 +188,13 @@ fn save_tokens(tokens: &GoogleTokens) -> Result<()> {
 ///
 /// Requiere credenciales de GCP: ir a https://console.cloud.google.com/apis/credentials
 /// Crear una aplicación de escritorio con redirect URI: http://localhost:8080
+
+/// Autenticar con las credenciales embebidas de oxt.
+/// El usuario no necesita crear su propio proyecto GCP.
+pub fn authenticate_defaults() -> Result<AuthStatus> {
+    authenticate(DEFAULT_CLIENT_ID, DEFAULT_CLIENT_SECRET)
+}
+
 pub fn authenticate(client_id: &str, client_secret: &str) -> Result<AuthStatus> {
     use std::io::{Read, Write};
     use std::net::TcpListener;

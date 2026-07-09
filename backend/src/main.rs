@@ -18,12 +18,12 @@ struct Cli {
 enum GoogleCommand {
     /// Autenticar con Google Workspace
     Auth {
-        /// Client ID de GCP
+        /// Client ID de GCP (opcional, default: credenciales embebidas)
         #[arg(long)]
-        client_id: String,
-        /// Client Secret de GCP
+        client_id: Option<String>,
+        /// Client Secret de GCP (opcional, default: credenciales embebidas)
         #[arg(long)]
-        client_secret: String,
+        client_secret: Option<String>,
     },
     /// Leer un Google Doc
     #[command(name = "docs:read")]
@@ -165,7 +165,11 @@ enum Command {
 fn handle_google(cmd: GoogleCommand) {
     match cmd {
         GoogleCommand::Auth { client_id, client_secret } => {
-            match oxt_backend::google::authenticate(&client_id, &client_secret) {
+            let result = match (client_id, client_secret) {
+                (Some(cid), Some(cs)) => oxt_backend::google::authenticate(&cid, &cs),
+                _ => oxt_backend::google::authenticate_defaults(),
+            };
+            match result {
                 Ok(_) => {}
                 Err(e) => {
                     eprintln!("Error: {e}");
