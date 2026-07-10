@@ -226,7 +226,9 @@ pub fn authenticate(client_id: &str, client_secret: &str) -> Result<AuthStatus> 
                  https://www.googleapis.com/auth/spreadsheets%20\
                  https://www.googleapis.com/auth/presentations&\
          access_type=offline&\
-         prompt=consent"
+         prompt=consent&\
+         code_challenge_method=S256&\
+         code_challenge={challenge}"
     );
 
     // Abrir navegador
@@ -242,41 +244,52 @@ pub fn authenticate(client_id: &str, client_secret: &str) -> Result<AuthStatus> 
 
     println!("Esperando autorización en http://localhost:{redirect_port}...");
 
-    let code = match listener.accept() {
-        Ok((mut stream, _)) => {
-            let mut buffer = [0; 8192];
-            let n = stream.read(&mut buffer).map_err(|e| {
-                GoogleError::AuthFailed(format!("Error leyendo redirect: {e}"))
-            })?;
-            let request = String::from_utf8_lossy(&buffer[..n]);
+    // Aceptar múltiples conexiones hasta que recibamos un código.
+    // El navegador a veces hace un ping (GET /) antes del redirect real con código.
+    let code = loop {
+        let (mut stream, _) = match listener.accept() {
+            Ok(conn) => conn,
+            Err(e) => return Err(GoogleError::AuthFailed(format!("Error en redirect: {e}"))),
+        };
 
-            // Extraer el código de autorización de la URL
-            let code = request
-                .lines()
-                .find(|line| line.starts_with("GET /?code=") || line.starts_with("GET /?authuser="))
-                .and_then(|line| {
-                    let params = line.split_whitespace().nth(1)?;
-                    let code_start = params.find("?code=")?;
-                    let after_code = &params[code_start + 6..];
-                    let code_end = after_code.find('&').unwrap_or(after_code.len());
-                    Some(&after_code[..code_end])
-                });
+        let mut buffer = [0; 8192];
+        let n = match stream.read(&mut buffer) {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        let request = String::from_utf8_lossy(&buffer[..n]);
+        let request_line = request.lines().next().unwrap_or("");
 
-            // Responder al navegador
-            let response = if code.is_some() {
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n\
+        // Extraer el código de la query string. El formato puede ser:
+        //   GET /?code=XXXX HTTP/1.1
+        //   GET /?iss=...&code=XXXX&scope=... HTTP/1.1
+        let extracted = request_line
+            .split_whitespace()
+            .nth(1)
+            .and_then(|path_and_query| {
+                let query_start = path_and_query.find('?')?;
+                let query = &path_and_query[query_start + 1..];
+                for pair in query.split('&') {
+                    if let Some(val) = pair.strip_prefix("code=") {
+                        return Some(val.to_string());
+                    }
+                }
+                None
+            });
+
+        if let Some(code_val) = extracted {
+            let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n\
                  <html><body><h1>✅ Autorizado</h1>\
-                 <p>Ya puedes cerrar esta ventana.</p></body></html>"
-            } else {
-                "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\n\r\n\
-                 <html><body><h1>❌ Error</h1>\
-                 <p>No se recibió código de autorización.</p></body></html>"
-            };
-            stream.write_all(response.as_bytes()).ok();
-
-            code.map(|c| c.to_string())
+                 <p>Ya puedes cerrar esta ventana.</p></body></html>";
+            let _ = stream.write_all(response.as_bytes());
+            break Some(code_val);
+        } else {
+            // Reenviar al navegador a Google para que intente de nuevo
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: {auth_url}\r\nContent-Length: 0\r\n\r\n"
+            );
+            let _ = stream.write_all(response.as_bytes());
         }
-        Err(e) => return Err(GoogleError::AuthFailed(format!("Error en redirect: {e}"))),
     };
 
     let code = code.ok_or_else(|| GoogleError::AuthFailed("No se recibió código".into()))?;
@@ -617,8 +630,7 @@ fn rgb_color_to_hex(color: &serde_json::Value) -> Option<String> {
 /// Estrategia: borra todo el contenido del doc y lo reemplaza con el IR.
 #[cfg(feature = "google")]
 pub fn write_doc(document_id: &str, ir: &crate::ir::OxtIR) -> Result<()> {
-    #[allow(unused_imports)]
-use crate::ir::Element;
+    use crate::ir::Element;
 
     let tokens = load_tokens()?;
     let url = format!(
@@ -638,43 +650,98 @@ use crate::ir::Element;
         }
     }));
 
-    // 2. Insertar contenido desde OxtIR
+    // 2. Insertar contenido desde OxtIR, rastreando posiciones para formateo
+    // Google Docs: índice 1 = inicio del body. Cada char avanza 1 (incluye \n).
     let mut text = String::new();
+    let mut current_index: i64 = 1;
+    let mut style_ranges: Vec<serde_json::Value> = Vec::new();
+
     for section in &ir.sections {
         if let Some(ref title) = section.title {
-            text.push_str(&title);
+            let start = current_index;
+            text.push_str(title);
+            current_index += title.chars().count() as i64;
             text.push('\n');
+            current_index += 1;
+            // Título de sección en negrita
+            style_ranges.push(serde_json::json!({
+                "range": { "startIndex": start, "endIndex": current_index - 1 },
+                "textStyle": { "bold": true },
+                "fields": "bold"
+            }));
         }
         for element in &section.elements {
             match element {
                 Element::Heading { level: _, text: t } => {
+                    let start = current_index;
                     text.push_str(t);
+                    current_index += t.chars().count() as i64;
                     text.push('\n');
+                    current_index += 1;
+                    // Headings en negrita
+                    style_ranges.push(serde_json::json!({
+                        "range": { "startIndex": start, "endIndex": current_index - 1 },
+                        "textStyle": { "bold": true },
+                        "fields": "bold"
+                    }));
                 }
                 Element::Paragraph { runs } => {
                     for run in runs {
+                        let start = current_index;
                         text.push_str(&run.text);
+                        current_index += run.text.chars().count() as i64;
+
+                        // Aplicar formato del run si tiene
+                        let has_bold = run.bold.unwrap_or(false);
+                        let has_italic = run.italic.unwrap_or(false);
+                        let has_underline = run.underline.unwrap_or(false);
+                        if has_bold || has_italic || has_underline {
+                            let mut fields = Vec::new();
+                            let mut ts = serde_json::json!({});
+                            if has_bold {
+                                ts["bold"] = serde_json::json!(true);
+                                fields.push("bold");
+                            }
+                            if has_italic {
+                                ts["italic"] = serde_json::json!(true);
+                                fields.push("italic");
+                            }
+                            if has_underline {
+                                ts["underline"] = serde_json::json!(true);
+                                fields.push("underline");
+                            }
+                            style_ranges.push(serde_json::json!({
+                                "range": { "startIndex": start, "endIndex": current_index },
+                                "textStyle": ts,
+                                "fields": fields.join(",")
+                            }));
+                        }
                     }
                     text.push('\n');
+                    current_index += 1;
                 }
                 Element::List { items, .. } => {
                     for item in items {
-                        text.push_str(&format!("• {item}\n"));
+                        let line = format!("• {item}\n");
+                        text.push_str(&line);
+                        current_index += line.chars().count() as i64;
                     }
                 }
                 Element::Table { rows } => {
                     for row in rows {
-                        text.push_str(&row.join("\t"));
-                        text.push('\n');
+                        let line = format!("{}\n", row.join("\t"));
+                        text.push_str(&line);
+                        current_index += line.chars().count() as i64;
                     }
                     text.push('\n');
+                    current_index += 1;
                 }
                 _ => {}
             }
         }
     }
 
-    // Google Docs usa índices: el documento empieza en 1
+    // Insertar todo el texto de una vez
     requests.push(serde_json::json!({
         "insertText": {
             "location": { "index": 1 },
@@ -682,15 +749,24 @@ use crate::ir::Element;
         }
     }));
 
+    // Aplicar estilos a los rangos con formato
+    for style_req in &style_ranges {
+        requests.push(serde_json::json!({
+            "updateTextStyle": style_req
+        }));
+    }
+
     let body = serde_json::json!({ "requests": requests });
 
-    let _resp: serde_json::Value = ureq::post(&url)
+    // Enviar batchUpdate. Si falla, ureq 3 no expone el body del error,
+    // pero el Display impl ya indica el status.
+    let _: serde_json::Value = ureq::post(&url)
         .header("Authorization", &format!("Bearer {}", tokens.access_token))
         .header("Content-Type", "application/json")
         .send_json(&body)
-        .map_err(|e| GoogleError::Http(e.to_string()))?
+        .map_err(|e| GoogleError::Http(format!("HTTP al escribir doc: {e}")))?
         .body_mut().read_json::<serde_json::Value>()
-            .map_err(|e| GoogleError::Http(e.to_string()))?;
+            .map_err(|e| GoogleError::Http(format!("JSON parse: {e}")))?;
 
     Ok(())
 }
@@ -710,13 +786,16 @@ fn get_doc_end_index(document_id: &str) -> Result<i64> {
         .body_mut().read_json::<serde_json::Value>()
             .map_err(|e| GoogleError::Http(e.to_string()))?;
 
-    // El índice final es el último content[].endIndex
+    // El índice final es el último content[].endIndex.
+    // Restamos 1 porque deleteContentRange no puede incluir
+    // el newline estructural al final del documento.
     let end_index = resp.pointer("/body/content")
         .and_then(|c| c.as_array())
         .and_then(|arr| arr.last())
         .and_then(|last| last.get("endIndex"))
         .and_then(|v| v.as_i64())
-        .unwrap_or(2);
+        .map(|i| (i - 1).max(1))
+        .unwrap_or(1);
 
     Ok(end_index)
 }
