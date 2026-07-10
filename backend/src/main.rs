@@ -18,12 +18,12 @@ struct Cli {
 enum GoogleCommand {
     /// Autenticar con Google Workspace
     Auth {
-        /// Client ID de GCP
+        /// Client ID de GCP (opcional, default: credenciales embebidas)
         #[arg(long)]
-        client_id: String,
-        /// Client Secret de GCP
+        client_id: Option<String>,
+        /// Client Secret de GCP (opcional, default: credenciales embebidas)
         #[arg(long)]
-        client_secret: String,
+        client_secret: Option<String>,
     },
     /// Leer un Google Doc
     #[command(name = "docs:read")]
@@ -99,6 +99,23 @@ enum GoogleCommand {
         #[arg(long)]
         from: String,
     },
+
+    /// Listar archivos de Google Drive
+    #[command(name = "drive:list")]
+    DriveList {
+        /// Filtro opcional (ej: "name contains 'reporte'")
+        #[arg(long)]
+        query: Option<String>,
+    },
+    /// Descargar un archivo de Google Drive
+    #[command(name = "drive:download")]
+    DriveDownload {
+        /// ID del archivo
+        file_id: String,
+        /// Ruta de salida
+        #[arg(long, default_value = "descarga")]
+        output: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -165,7 +182,11 @@ enum Command {
 fn handle_google(cmd: GoogleCommand) {
     match cmd {
         GoogleCommand::Auth { client_id, client_secret } => {
-            match oxt_backend::google::authenticate(&client_id, &client_secret) {
+            let result = match (client_id, client_secret) {
+                (Some(cid), Some(cs)) => oxt_backend::google::authenticate(&cid, &cs),
+                _ => oxt_backend::google::authenticate_defaults(),
+            };
+            match result {
                 Ok(_) => {}
                 Err(e) => {
                     eprintln!("Error: {e}");
@@ -377,6 +398,42 @@ fn handle_google(cmd: GoogleCommand) {
                 };
                 match oxt_backend::google::write_doc(&document_id, &ir) {
                     Ok(_) => println!("Documento actualizado: {document_id}"),
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            #[cfg(not(feature = "google"))]
+            {
+                eprintln!("Error: Google feature no habilitada");
+                std::process::exit(1);
+            }
+        }
+        GoogleCommand::DriveList { query } => {
+            #[cfg(feature = "google")]
+            {
+                match oxt_backend::google::list_drive_files(query.as_deref()) {
+                    Ok(files) => {
+                        println!("{}", serde_json::to_string_pretty(&files).unwrap_or_default());
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            #[cfg(not(feature = "google"))]
+            {
+                eprintln!("Error: Google feature no habilitada");
+                std::process::exit(1);
+            }
+        }
+        GoogleCommand::DriveDownload { file_id, output } => {
+            #[cfg(feature = "google")]
+            {
+                match oxt_backend::google::download_drive_file(&file_id, &output) {
+                    Ok(_) => {}
                     Err(e) => {
                         eprintln!("Error: {e}");
                         std::process::exit(1);
