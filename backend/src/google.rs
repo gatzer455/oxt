@@ -19,8 +19,7 @@
 //! oxt google docs:create "Título"
 //! oxt google docs:update <document-id> --from ir.json
 //! ```
-#![allow(dead_code, unused_variables)]
-#[allow(unused_imports)]
+
 use crate::ir::Element;
 
 use std::path::PathBuf;
