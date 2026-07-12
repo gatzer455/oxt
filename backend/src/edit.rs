@@ -124,7 +124,6 @@ pub fn replace_text(path: impl AsRef<Path>, old: &str, new: &str) -> Result<Edit
     let mut ir = doc.ir.clone();
     let mut replacements = 0;
 
-    eprintln!("DEBUG: IR sections={}, plain={:?}", ir.sections.len(), ir.plain_text().chars().take(100).collect::<String>());
 
 replacements = replace_in_ir(&mut ir, old, new);
 
