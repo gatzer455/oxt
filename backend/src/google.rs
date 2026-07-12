@@ -300,15 +300,6 @@ fn exchange_code_for_tokens(
 ) -> Result<GoogleTokens> {
     #[cfg(feature = "google")]
     {
-        // Debug: print curl equivalent for manual testing
-        eprintln!("curl -X POST https://oauth2.googleapis.com/token \\");
-        eprintln!("  -d 'code={code}' \\");
-        eprintln!("  -d 'client_id={client_id}' \\");
-        eprintln!("  -d 'client_secret={client_secret}' \\");
-        eprintln!("  -d 'redirect_uri={redirect_uri}' \\");
-        eprintln!("  -d 'grant_type=authorization_code' \\");
-        eprintln!("  -d 'code_verifier={code_verifier}'");
-
         // Usar agente propio que no trata 4xx como error (para leer el body de Google)
         let agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
@@ -362,7 +353,7 @@ fn exchange_code_for_tokens(
         };
 
         save_tokens(&tokens)?;
-        println!("✅ Autenticación exitosa");
+        println!("Autenticación exitosa");
         Ok(tokens)
     }
 
