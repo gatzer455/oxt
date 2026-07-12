@@ -180,6 +180,16 @@ enum Command {
 }
 
 fn handle_google(cmd: GoogleCommand) {
+    macro_rules! format_ir {
+        ($ir:expr, $format:expr) => {
+            match $format.as_str() {
+                "ir" => serde_json::to_string_pretty(&$ir).unwrap_or_default(),
+                "markdown" => $ir.to_markdown(),
+                _ => $ir.plain_text(),
+            }
+        };
+    }
+
     match cmd {
         GoogleCommand::Auth { client_id, client_secret } => {
             let result = match (client_id, client_secret) {
@@ -199,12 +209,8 @@ fn handle_google(cmd: GoogleCommand) {
             {
                 match oxt_backend::google::read_doc(&document_id) {
                     Ok(ir) => {
-                        let output = match format.as_str() {
-                            "ir" => serde_json::to_string_pretty(&ir).unwrap_or_default(),
-                            "markdown" => ir.to_markdown(),
-                            _ => ir.plain_text(),
-                        };
-                        println!("{output}");
+                        
+                        println!("{}", format_ir!(ir, format));
                     }
                     Err(e) => {
                         eprintln!("Error: {e}");
@@ -240,12 +246,8 @@ fn handle_google(cmd: GoogleCommand) {
             {
                 match oxt_backend::google::read_sheet(&spreadsheet_id) {
                     Ok(ir) => {
-                        let output = match format.as_str() {
-                            "ir" => serde_json::to_string_pretty(&ir).unwrap_or_default(),
-                            "markdown" => ir.to_markdown(),
-                            _ => ir.plain_text(),
-                        };
-                        println!("{output}");
+                        
+                        println!("{}", format_ir!(ir, format));
                     }
                     Err(e) => {
                         eprintln!("Error: {e}");
@@ -281,12 +283,8 @@ fn handle_google(cmd: GoogleCommand) {
             {
                 match oxt_backend::google::read_slides(&presentation_id) {
                     Ok(ir) => {
-                        let output = match format.as_str() {
-                            "ir" => serde_json::to_string_pretty(&ir).unwrap_or_default(),
-                            "markdown" => ir.to_markdown(),
-                            _ => ir.plain_text(),
-                        };
-                        println!("{output}");
+                        
+                        println!("{}", format_ir!(ir, format));
                     }
                     Err(e) => {
                         eprintln!("Error: {e}");
