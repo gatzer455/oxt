@@ -300,7 +300,16 @@ fn exchange_code_for_tokens(
 ) -> Result<GoogleTokens> {
     #[cfg(feature = "google")]
     {
-        let resp: serde_json::Value = ureq::post("https://oauth2.googleapis.com/token")
+        // Debug: print curl equivalent for manual testing
+        eprintln!("curl -X POST https://oauth2.googleapis.com/token \\");
+        eprintln!("  -d 'code={code}' \\");
+        eprintln!("  -d 'client_id={client_id}' \\");
+        eprintln!("  -d 'client_secret={client_secret}' \\");
+        eprintln!("  -d 'redirect_uri={redirect_uri}' \\");
+        eprintln!("  -d 'grant_type=authorization_code' \\");
+        eprintln!("  -d 'code_verifier={code_verifier}'");
+
+        let resp: serde_json::Value = match ureq::post("https://oauth2.googleapis.com/token")
             .send_form([
                 ("code", code),
                 ("client_id", client_id),
@@ -308,10 +317,22 @@ fn exchange_code_for_tokens(
                 ("redirect_uri", redirect_uri),
                 ("grant_type", "authorization_code"),
                 ("code_verifier", code_verifier),
-            ])
-            .map_err(|e| GoogleError::Http(e.to_string()))?
-            .body_mut().read_json::<serde_json::Value>()
-            .map_err(|e| GoogleError::Http(e.to_string()))?;
+            ]) {
+            Ok(mut resp) => {
+                if !resp.status().is_success() {
+                    let body = resp.body_mut().read_to_vec().unwrap_or_default();
+                    let body_str = String::from_utf8_lossy(&body);
+                    eprintln!("Token endpoint HTTP {}: {}", resp.status(), &body_str[..body_str.len().min(500)]);
+                    return Err(GoogleError::AuthFailed(format!("HTTP {}: {}", resp.status(), &body_str[..body_str.len().min(200)])));
+                }
+                resp.body_mut().read_json::<serde_json::Value>()
+                    .map_err(|e| GoogleError::Http(e.to_string()))?
+            }
+            Err(e) => {
+                eprintln!("Token exchange error: {e}");
+                return Err(GoogleError::Http(e.to_string()));
+            }
+        };
 
         let access_token = resp.get("access_token")
             .and_then(|v| v.as_str())
