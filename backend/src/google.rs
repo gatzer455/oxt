@@ -1302,14 +1302,25 @@ pub fn list_drive_files(query: Option<&str>) -> Result<serde_json::Value> {
         url.push_str(&format!("&q={}", urlencoding(q)));
     }
 
-    let resp: serde_json::Value = ureq::get(&url)
+    let agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .build()
+        .new_agent();
+    let mut resp = agent.get(&url)
         .header("Authorization", &format!("Bearer {}", tokens.access_token))
         .call()
-        .map_err(|e| GoogleError::Http(e.to_string()))?
-        .body_mut().read_json::<serde_json::Value>()
-            .map_err(|e| GoogleError::Http(e.to_string()))?;
+        .map_err(|e| GoogleError::Http(format!("Transport: {e}")))?;
 
-    Ok(resp)
+    let body = resp.body_mut().read_to_vec()
+        .map_err(|e| GoogleError::Http(format!("Read: {e}")))?;
+    let body_str = String::from_utf8_lossy(&body);
+
+    if !resp.status().is_success() {
+        eprintln!("Drive API HTTP {}: {}", resp.status(), &body_str[..body_str.len().min(500)]);
+        return Err(GoogleError::Api(format!("HTTP {}: {}", resp.status(), &body_str[..body_str.len().min(200)])));
+    }
+
+    serde_json::from_str(&body_str).map_err(|e| GoogleError::Http(format!("JSON: {e}")))
 }
 
 /// Descargar un archivo de Google Drive.
