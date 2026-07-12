@@ -339,6 +339,10 @@ fn exchange_code_for_tokens(
             .and_then(|v| v.as_i64())
             .unwrap_or(3600);
 
+        if let Some(s) = resp.get("scope").and_then(|v| v.as_str()) {
+            eprintln!("Scopes otorgados: {s}");
+        }
+
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
