@@ -173,7 +173,7 @@ impl<R: Read + Seek> OpcPackage<R> {
     pub fn part_rels(&mut self, part_path: &str) -> Result<Vec<Relationship>> {
         let path = std::path::Path::new(part_path);
         let dir = path.parent().unwrap_or_else(|| std::path::Path::new(""));
-        let filename = path.file_name().unwrap().to_str().unwrap_or("");
+        let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
         let rels_path = if dir.to_str().unwrap_or("").is_empty() {
             format!("_rels/{}.rels", filename)
         } else {

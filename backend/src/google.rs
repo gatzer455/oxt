@@ -168,8 +168,19 @@ fn refresh_tokens(old: &GoogleTokens) -> Result<GoogleTokens> {
 fn save_tokens(tokens: &GoogleTokens) -> Result<()> {
     let dir = config_dir();
     std::fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).ok();
+    }
     let data = serde_json::to_string_pretty(tokens)?;
-    std::fs::write(tokens_path(), data)?;
+    let path = tokens_path();
+    std::fs::write(&path, data)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).ok();
+    }
     Ok(())
 }
 
@@ -379,7 +390,9 @@ fn open_browser(url: &str) -> Result<()> {
 
 #[cfg(target_os = "windows")]
 fn open_browser(url: &str) -> Result<()> {
-    std::process::Command::new("cmd").args(["/c", "start", url]).spawn().ok();
+    // start necesita "" como primer arg (titulo ventana) y url quoteada
+    // para evitar injection via & en la URL
+    std::process::Command::new("cmd").args(["/c", "start", "", url]).spawn().ok();
     Ok(())
 }
 
