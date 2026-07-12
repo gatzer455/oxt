@@ -176,7 +176,7 @@ fn save_tokens(tokens: &GoogleTokens) -> Result<()> {
 /// Credenciales OAuth embebidas (Desktop app de GCP).
 /// Estándar en CLIs de escritorio — Google no trata client_secret como secreto en desktop apps.
 const DEFAULT_CLIENT_ID: &str = "327915843284-o2715l81t40re8568dineghb1t7kbqug.apps.googleusercontent.com";
-const DEFAULT_CLIENT_SECRET: &str = "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";
+const DEFAULT_CLIENT_SECRET: &str = "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";
 
 /// Iniciar flujo OAuth2: abre navegador, recibe redirect en localhost.
 ///
