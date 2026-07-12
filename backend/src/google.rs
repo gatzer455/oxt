@@ -124,15 +124,13 @@ fn refresh_tokens(old: &GoogleTokens) -> Result<GoogleTokens> {
 
     #[cfg(feature = "google")]
     {
-        let post_body = format!(
-            "grant_type=refresh_token&refresh_token={}&client_id={}&client_secret={}",
-            urlencode(&refresh),
-            urlencode(&old.client_id),
-            urlencode(&old.client_secret),
-        );
         let resp: serde_json::Value = ureq::post("https://oauth2.googleapis.com/token")
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .send(post_body)
+            .send_form([
+                ("client_id", &old.client_id as &str),
+                ("client_secret", &old.client_secret as &str),
+                ("refresh_token", refresh as &str),
+                ("grant_type", "refresh_token"),
+            ])
             .map_err(|e| GoogleError::Http(e.to_string()))?
             .body_mut().read_json::<serde_json::Value>()
             .map_err(|e| GoogleError::Http(e.to_string()))?;
@@ -302,20 +300,18 @@ fn exchange_code_for_tokens(
 ) -> Result<GoogleTokens> {
     #[cfg(feature = "google")]
     {
-        let post_body = format!(
-            "code={}&client_id={}&client_secret={}&redirect_uri={}&grant_type=authorization_code&code_verifier={}",
-            urlencode(code),
-            urlencode(client_id),
-            urlencode(client_secret),
-            urlencode(redirect_uri),
-            urlencode(code_verifier),
-        );
         let resp: serde_json::Value = ureq::post("https://oauth2.googleapis.com/token")
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .send(post_body)
+            .send_form([
+                ("code", code),
+                ("client_id", client_id),
+                ("client_secret", client_secret),
+                ("redirect_uri", redirect_uri),
+                ("grant_type", "authorization_code"),
+                ("code_verifier", code_verifier),
+            ])
             .map_err(|e| GoogleError::Http(e.to_string()))?
             .body_mut().read_json::<serde_json::Value>()
-            .map_err(|e| GoogleError::Http(format!("JSON: {e}")))?;
+            .map_err(|e| GoogleError::Http(e.to_string()))?;
 
         let access_token = resp.get("access_token")
             .and_then(|v| v.as_str())
