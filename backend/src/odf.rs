@@ -156,13 +156,11 @@ impl OdfReader {
                             current_text = String::new();
                             // Leer nivel del heading desde atributo outline-level
                             current_heading_level = 1;
-                            for attr in e.attributes() {
-                                if let Ok(a) = attr {
-                                    let aname = std::str::from_utf8(a.key.as_ref()).unwrap_or("");
-                                    if aname == "outline-level" || aname.ends_with(":outline-level") {
-                                        if let Ok(v) = std::str::from_utf8(&a.value) {
-                                            current_heading_level = v.parse().unwrap_or(1);
-                                        }
+                            for a in e.attributes().flatten() {
+                                let aname = std::str::from_utf8(a.key.as_ref()).unwrap_or("");
+                                if aname == "outline-level" || aname.ends_with(":outline-level") {
+                                    if let Ok(v) = std::str::from_utf8(&a.value) {
+                                        current_heading_level = v.parse().unwrap_or(1);
                                     }
                                 }
                             }
@@ -173,15 +171,12 @@ impl OdfReader {
                             list_items = Vec::new();
                             list_ordered = false;
                             // Detectar si es ordered por tipo de lista
-                            for attr in e.attributes() {
-                                if let Ok(a) = attr {
-                                    let aname = std::str::from_utf8(a.key.as_ref()).unwrap_or("");
-                                    if aname == "style-name" || aname.ends_with(":style-name") {
-                                        let val = std::str::from_utf8(&a.value).unwrap_or("");
-                                        // Las listas numeradas usualmente usan estilos como "L1" o "Numbering_20_Symbols"
-                                        if val.contains("Number") || val.contains("number") {
-                                            list_ordered = true;
-                                        }
+                            for a in e.attributes().flatten() {
+                                let aname = std::str::from_utf8(a.key.as_ref()).unwrap_or("");
+                                if aname == "style-name" || aname.ends_with(":style-name") {
+                                    let val = std::str::from_utf8(&a.value).unwrap_or("");
+                                    if val.contains("Number") || val.contains("number") {
+                                        list_ordered = true;
                                     }
                                 }
                             }
@@ -280,10 +275,6 @@ impl OdfReader {
                                 cell_text.push_str(&current_text);
                             } else if in_list_item {
                                 list_items.push(current_text.clone());
-                            } else if in_text_box {
-                                elements.push(Element::Paragraph {
-                                    runs: vec![Run::plain(&current_text)],
-                                });
                             } else {
                                 elements.push(Element::Paragraph {
                                     runs: vec![Run::plain(&current_text)],

@@ -19,8 +19,8 @@
 //! oxt google docs:create "Título"
 //! oxt google docs:update <document-id> --from ir.json
 //! ```
-#![allow(dead_code, unused_variables)]
-#[allow(unused_imports)]
+#![cfg_attr(not(feature = "google"), allow(dead_code, unused_variables, unused_imports))]
+
 use crate::ir::Element;
 
 use std::path::PathBuf;
@@ -124,16 +124,13 @@ fn refresh_tokens(old: &GoogleTokens) -> Result<GoogleTokens> {
 
     #[cfg(feature = "google")]
     {
-        let params = serde_json::json!({
-            "client_id": old.client_id,
-            "client_secret": old.client_secret,
-            "refresh_token": refresh,
-            "grant_type": "refresh_token",
-        });
-
         let resp: serde_json::Value = ureq::post("https://oauth2.googleapis.com/token")
-            .header("Content-Type", "application/json")
-            .send_json(&params)
+            .send_form([
+                ("client_id", &old.client_id as &str),
+                ("client_secret", &old.client_secret as &str),
+                ("refresh_token", refresh as &str),
+                ("grant_type", "refresh_token"),
+            ])
             .map_err(|e| GoogleError::Http(e.to_string()))?
             .body_mut().read_json::<serde_json::Value>()
             .map_err(|e| GoogleError::Http(e.to_string()))?;
@@ -160,7 +157,7 @@ fn refresh_tokens(old: &GoogleTokens) -> Result<GoogleTokens> {
         };
 
         save_tokens(&tokens)?;
-        return Ok(tokens);
+        Ok(tokens)
     }
 
     #[cfg(not(feature = "google"))]
@@ -176,6 +173,11 @@ fn save_tokens(tokens: &GoogleTokens) -> Result<()> {
     Ok(())
 }
 
+/// Credenciales OAuth embebidas (Desktop app de GCP).
+/// Estándar en CLIs de escritorio — Google no trata client_secret como secreto en desktop apps.
+const DEFAULT_CLIENT_ID: &str = "327915843284-o2715l81t40re8568dineghb1t7kbqug.apps.googleusercontent.com";
+const DEFAULT_CLIENT_SECRET: &str = "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";
+
 /// Iniciar flujo OAuth2: abre navegador, recibe redirect en localhost.
 ///
 /// Requiere credenciales de GCP: ir a https://console.cloud.google.com/apis/credentials
@@ -187,7 +189,21 @@ pub fn authenticate(client_id: &str, client_secret: &str) -> Result<AuthStatus> 
     let redirect_port = 8080;
     let redirect_uri = format!("http://localhost:{redirect_port}");
 
-    // Construir URL de autorización
+    // PKCE: generar code_verifier + code_challenge
+    use rand::Rng;
+    use sha2::{Digest, Sha256};
+    use base64::Engine as _;
+    let verifier: String = rand::thread_rng()
+        .sample_iter(&rand::distributions::Alphanumeric)
+        .take(64)
+        .map(char::from)
+        .collect();
+    let challenge = {
+        let hash = Sha256::digest(verifier.as_bytes());
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hash)
+    };
+
+    // Construir URL de autorización (scopes: docs, sheets, slides, drive.readonly)
     let auth_url = format!(
         "https://accounts.google.com/o/oauth2/v2/auth?\
          client_id={client_id}&\
@@ -195,9 +211,12 @@ pub fn authenticate(client_id: &str, client_secret: &str) -> Result<AuthStatus> 
          response_type=code&\
          scope=https://www.googleapis.com/auth/documents%20\
                  https://www.googleapis.com/auth/spreadsheets%20\
-                 https://www.googleapis.com/auth/presentations&\
+                 https://www.googleapis.com/auth/presentations%20\
+                 https://www.googleapis.com/auth/drive.readonly&\
          access_type=offline&\
-         prompt=consent"
+         prompt=consent&\
+         code_challenge_method=S256&\
+         code_challenge={challenge}"
     );
 
     // Abrir navegador
@@ -213,49 +232,62 @@ pub fn authenticate(client_id: &str, client_secret: &str) -> Result<AuthStatus> 
 
     println!("Esperando autorización en http://localhost:{redirect_port}...");
 
-    let code = match listener.accept() {
+    let code = loop {
+        match listener.accept() {
         Ok((mut stream, _)) => {
             let mut buffer = [0; 8192];
-            let n = stream.read(&mut buffer).map_err(|e| {
-                GoogleError::AuthFailed(format!("Error leyendo redirect: {e}"))
-            })?;
+            let n = match stream.read(&mut buffer) {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
             let request = String::from_utf8_lossy(&buffer[..n]);
+            let request_line = request.lines().next().unwrap_or("");
 
-            // Extraer el código de autorización de la URL
-            let code = request
-                .lines()
-                .find(|line| line.starts_with("GET /?code=") || line.starts_with("GET /?authuser="))
-                .and_then(|line| {
-                    let params = line.split_whitespace().nth(1)?;
-                    let code_start = params.find("?code=")?;
-                    let after_code = &params[code_start + 6..];
-                    let code_end = after_code.find('&').unwrap_or(after_code.len());
-                    Some(&after_code[..code_end])
+            // Extraer el código de la query string. El formato puede ser:
+            //   GET /?code=XXXX HTTP/1.1
+            //   GET /?iss=...&code=XXXX&scope=... HTTP/1.1
+            let extracted = request_line
+                .split_whitespace()
+                .nth(1)
+                .and_then(|path_and_query| {
+                    let query_start = path_and_query.find('?')?;
+                    let query = &path_and_query[query_start + 1..];
+                    for pair in query.split('&') {
+                        if let Some(val) = pair.strip_prefix("code=") {
+                            return Some(val.to_string());
+                        }
+                    }
+                    None
                 });
 
-            // Responder al navegador
-            let response = if code.is_some() {
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n\
-                 <html><body><h1>✅ Autorizado</h1>\
-                 <p>Ya puedes cerrar esta ventana.</p></body></html>"
+            if let Some(code_val) = extracted {
+                let html_body = include_str!("google-pages/auth-success.html");
+                let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n{html_body}");
+                let _ = stream.write_all(response.as_bytes());
+                break Some(code_val);
             } else {
-                "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\n\r\n\
-                 <html><body><h1>❌ Error</h1>\
-                 <p>No se recibió código de autorización.</p></body></html>"
-            };
-            stream.write_all(response.as_bytes()).ok();
-
-            code.map(|c| c.to_string())
+                // Reenviar al navegador a Google para que intente de nuevo
+                let response = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: {auth_url}\r\nContent-Length: 0\r\n\r\n"
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
         }
         Err(e) => return Err(GoogleError::AuthFailed(format!("Error en redirect: {e}"))),
+        }
     };
 
     let code = code.ok_or_else(|| GoogleError::AuthFailed("No se recibió código".into()))?;
 
     // Intercambiar código por tokens
-    exchange_code_for_tokens(&code, client_id, client_secret, &redirect_uri)?;
+    exchange_code_for_tokens(&code, client_id, client_secret, &redirect_uri, &verifier)?;
 
     Ok(AuthStatus::Authenticated)
+}
+
+/// Autenticar usando credenciales embebidas (DEFAULT_CLIENT_ID / DEFAULT_CLIENT_SECRET).
+pub fn authenticate_defaults() -> Result<AuthStatus> {
+    authenticate(DEFAULT_CLIENT_ID, DEFAULT_CLIENT_SECRET)
 }
 
 /// Intercambiar código de autorización por access_token + refresh_token.
@@ -264,20 +296,19 @@ fn exchange_code_for_tokens(
     client_id: &str,
     client_secret: &str,
     redirect_uri: &str,
+    code_verifier: &str,
 ) -> Result<GoogleTokens> {
     #[cfg(feature = "google")]
     {
-        let params = serde_json::json!({
-            "code": code,
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "redirect_uri": redirect_uri,
-            "grant_type": "authorization_code",
-        });
-
         let resp: serde_json::Value = ureq::post("https://oauth2.googleapis.com/token")
-            .header("Content-Type", "application/json")
-            .send_json(&params)
+            .send_form([
+                ("code", code),
+                ("client_id", client_id),
+                ("client_secret", client_secret),
+                ("redirect_uri", redirect_uri),
+                ("grant_type", "authorization_code"),
+                ("code_verifier", code_verifier),
+            ])
             .map_err(|e| GoogleError::Http(e.to_string()))?
             .body_mut().read_json::<serde_json::Value>()
             .map_err(|e| GoogleError::Http(e.to_string()))?;
@@ -611,7 +642,7 @@ use crate::ir::Element;
     let mut text = String::new();
     for section in &ir.sections {
         if let Some(ref title) = section.title {
-            text.push_str(&title);
+            text.push_str(title);
             text.push('\n');
         }
         for element in &section.elements {
@@ -1240,6 +1271,62 @@ use crate::ir::Element;
     Ok(())
 }
 
+// ── Google Drive ────────────────────────────────────────────────────────────
+
+/// Listar archivos de Google Drive.
+/// Devuelve JSON con los archivos (id, name, mimeType, modifiedTime).
+#[cfg(feature = "google")]
+pub fn list_drive_files(query: Option<&str>) -> Result<serde_json::Value> {
+    let tokens = load_tokens()?;
+    let mut url = "https://www.googleapis.com/drive/v3/files?fields=files(id,name,mimeType,modifiedTime,size)".to_string();
+    if let Some(q) = query {
+        url.push_str(&format!("&q={}", urlencoding(q)));
+    }
+
+    let resp: serde_json::Value = ureq::get(&url)
+        .header("Authorization", &format!("Bearer {}", tokens.access_token))
+        .call()
+        .map_err(|e| GoogleError::Http(e.to_string()))?
+        .body_mut().read_json::<serde_json::Value>()
+            .map_err(|e| GoogleError::Http(e.to_string()))?;
+
+    Ok(resp)
+}
+
+/// Descargar un archivo de Google Drive.
+/// Guarda el contenido en la ruta especificada.
+#[cfg(feature = "google")]
+pub fn download_drive_file(file_id: &str, output: &str) -> Result<()> {
+    let tokens = load_tokens()?;
+    let url = format!(
+        "https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
+    );
+
+    let mut response = ureq::get(&url)
+        .header("Authorization", &format!("Bearer {}", tokens.access_token))
+        .call()
+        .map_err(|e| GoogleError::Http(e.to_string()))?;
+
+    let body = response.body_mut().read_to_vec()
+        .map_err(|e| GoogleError::Http(e.to_string()))?;
+
+    std::fs::write(output, &body)
+        .map_err(GoogleError::Io)?;
+
+    println!("Descargado: {} ({} bytes)", output, body.len());
+    Ok(())
+}
+
+/// URL-encode para query params de API (espacios como %20).
+#[cfg(feature = "google")]
+fn urlencoding(s: &str) -> String {
+    s.chars().map(|c| match c {
+        'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | '-' | '.' | '~' => c.to_string(),
+        ' ' => "%20".to_string(),
+        _ => format!("%{:02X}", c as u8),
+    }).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1268,7 +1355,7 @@ mod tests {
 
     #[test]
     fn test_doc_to_ir_basic() {
-        let doc_json = serde_json::json!({
+        let _doc_json = serde_json::json!({
             "title": "Test Doc",
             "body": {
                 "content": [
@@ -1307,7 +1394,7 @@ mod tests {
 
         #[cfg(feature = "google")]
         {
-            let ir = doc_to_ir(&doc_json).unwrap();
+            let ir = doc_to_ir(&_doc_json).unwrap();
             assert_eq!(ir.sections.len(), 1);
             assert_eq!(ir.metadata.title.as_deref(), Some("Test Doc"));
             assert_eq!(ir.sections[0].elements.len(), 2);

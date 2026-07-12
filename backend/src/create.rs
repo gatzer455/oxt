@@ -73,7 +73,7 @@ fn create_docx(path: &Path, ir: &OxtIR) -> Result<()> {
         .compression_method(zip::CompressionMethod::Deflated);
 
     // [Content_Types].xml
-    zip.start_file("[Content_Types].xml", opts.clone())?;
+    zip.start_file("[Content_Types].xml", opts)?;
     write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -82,19 +82,19 @@ fn create_docx(path: &Path, ir: &OxtIR) -> Result<()> {
 </Types>"#)?;
 
     // _rels/.rels
-    zip.start_file("_rels/.rels", opts.clone())?;
+    zip.start_file("_rels/.rels", opts)?;
     write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>"#)?;
 
     // word/_rels/document.xml.rels
-    zip.start_file("word/_rels/document.xml.rels", opts.clone())?;
+    zip.start_file("word/_rels/document.xml.rels", opts)?;
     write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>"#)?;
 
     // word/document.xml
-    zip.start_file("word/document.xml", opts.clone())?;
+    zip.start_file("word/document.xml", opts)?;
     write_docx_body(&mut zip, ir)?;
 
     zip.finish()?;
@@ -200,7 +200,7 @@ fn write_docx_paragraph<W: Write>(w: &mut W, runs: &[Run], bold: Option<bool>) -
 fn write_docx_table<W: Write>(w: &mut W, rows: &[Vec<String>]) -> std::io::Result<()> {
     write!(w, r#"<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/></w:tblPr>"#)?;
 
-    for (_ri, row) in rows.iter().enumerate() {
+    for row in rows.iter() {
         write!(w, "<w:tr>")?;
         for cell in row {
             write!(w, r#"<w:tc><w:p><w:r><w:t>"#)?;
@@ -223,7 +223,7 @@ fn create_xlsx(path: &Path, ir: &OxtIR) -> Result<()> {
         .compression_method(zip::CompressionMethod::Deflated);
 
     // [Content_Types].xml
-    zip.start_file("[Content_Types].xml", opts.clone())?;
+    zip.start_file("[Content_Types].xml", opts)?;
     let num_sheets = ir.sections.len();
     let sheet_cts = (0..num_sheets).map(|i|
         format!(r#"<Override PartName="/xl/worksheets/sheet{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>"#)
@@ -238,14 +238,14 @@ fn create_xlsx(path: &Path, ir: &OxtIR) -> Result<()> {
 </Types>"#, sheet_cts = sheet_cts)?;
 
     // _rels/.rels
-    zip.start_file("_rels/.rels", opts.clone())?;
+    zip.start_file("_rels/.rels", opts)?;
     write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
 </Relationships>"#)?;
 
     // xl/_rels/workbook.xml.rels
-    zip.start_file("xl/_rels/workbook.xml.rels", opts.clone())?;
+    zip.start_file("xl/_rels/workbook.xml.rels", opts)?;
     let sheet_rels: String = (0..num_sheets).map(|i|
         format!(r#"<Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i}.xml"/>"#)
     ).collect::<Vec<_>>().join("\n  ");
@@ -256,7 +256,7 @@ fn create_xlsx(path: &Path, ir: &OxtIR) -> Result<()> {
 </Relationships>"#, sheet_rels = sheet_rels, sid = num_sheets)?;
 
     // xl/workbook.xml
-    zip.start_file("xl/workbook.xml", opts.clone())?;
+    zip.start_file("xl/workbook.xml", opts)?;
     write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
           xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
@@ -285,7 +285,7 @@ fn create_xlsx(path: &Path, ir: &OxtIR) -> Result<()> {
         }
     }
 
-    zip.start_file("xl/sharedStrings.xml", opts.clone())?;
+    zip.start_file("xl/sharedStrings.xml", opts)?;
     write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="{count}" uniqueCount="{count}">"#,
         count = all_strings.len())?;
@@ -299,7 +299,7 @@ fn create_xlsx(path: &Path, ir: &OxtIR) -> Result<()> {
     // xl/worksheets/sheet{i}.xml — una por sección
     for (sheet_idx, section) in ir.sections.iter().enumerate() {
         let sheet_path = format!("xl/worksheets/sheet{sheet_idx}.xml");
-        zip.start_file(&sheet_path, opts.clone())?;
+        zip.start_file(&sheet_path, opts)?;
         write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <sheetData>"#)?;
@@ -336,7 +336,7 @@ fn create_pptx(path: &Path, ir: &OxtIR) -> Result<()> {
         .compression_method(zip::CompressionMethod::Deflated);
 
     // [Content_Types].xml
-    zip.start_file("[Content_Types].xml", opts.clone())?;
+    zip.start_file("[Content_Types].xml", opts)?;
     write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -349,14 +349,14 @@ fn create_pptx(path: &Path, ir: &OxtIR) -> Result<()> {
     )?;
 
     // _rels/.rels
-    zip.start_file("_rels/.rels", opts.clone())?;
+    zip.start_file("_rels/.rels", opts)?;
     write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
 </Relationships>"#)?;
 
     // ppt/_rels/presentation.xml.rels
-    zip.start_file("ppt/_rels/presentation.xml.rels", opts.clone())?;
+    zip.start_file("ppt/_rels/presentation.xml.rels", opts)?;
     write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   {}</Relationships>"#,
@@ -366,7 +366,7 @@ fn create_pptx(path: &Path, ir: &OxtIR) -> Result<()> {
     )?;
 
     // ppt/presentation.xml
-    zip.start_file("ppt/presentation.xml", opts.clone())?;
+    zip.start_file("ppt/presentation.xml", opts)?;
     write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
                 xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
@@ -382,7 +382,7 @@ fn create_pptx(path: &Path, ir: &OxtIR) -> Result<()> {
 
     // ppt/slides/slide{i}.xml
     for (i, section) in ir.sections.iter().enumerate() {
-        zip.start_file(format!("ppt/slides/slide{i}.xml"), opts.clone())?;
+        zip.start_file(format!("ppt/slides/slide{i}.xml"), opts)?;
         write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
        xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
@@ -474,7 +474,7 @@ fn create_odf_package(path: &Path, content_xml: &str, mimetype: &str) -> std::io
         .compression_method(zip::CompressionMethod::Deflated);
 
     // META-INF/manifest.xml
-    zip.start_file("META-INF/manifest.xml", opts.clone())?;
+    zip.start_file("META-INF/manifest.xml", opts)?;
     write!(zip, r#"<?xml version="1.0" encoding="UTF-8"?>
 <manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"
   manifest:version="1.2">
@@ -484,7 +484,7 @@ fn create_odf_package(path: &Path, content_xml: &str, mimetype: &str) -> std::io
 </manifest:manifest>"#, mime_type = mimetype)?;
 
     // content.xml
-    zip.start_file("content.xml", opts.clone())?;
+    zip.start_file("content.xml", opts)?;
     zip.write_all(content_xml.as_bytes())?;
 
     zip.finish()?;

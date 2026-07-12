@@ -18,6 +18,7 @@ pub struct OxtIR {
 
 /// Metadatos del documento.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Default)]
 pub struct Metadata {
     pub title: Option<String>,
     pub subject: Option<String>,
@@ -26,17 +27,6 @@ pub struct Metadata {
     pub word_count: Option<u32>,
 }
 
-impl Default for Metadata {
-    fn default() -> Self {
-        Self {
-            title: None,
-            subject: None,
-            creator: None,
-            page_count: None,
-            word_count: None,
-        }
-    }
-}
 
 /// Una sección del documento.
 ///
@@ -183,26 +173,6 @@ impl DocumentFormat {
             "odp" => Some(Self::Odp),
             _ => None,
         }
-    }
-
-    /// Detectar formato por magic bytes (primeros bytes del archivo).
-    /// Útil como fallback cuando la extensión no es confiable.
-    pub fn from_magic(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < 4 {
-            return None;
-        }
-        // ZIP magic: PK\x03\x04 → OOXML
-        if bytes[..4] == [0x50, 0x4B, 0x03, 0x04] {
-            // No podemos distinguir entre DOCX/XLSX/PPTX solo con magic,
-            // devolvemos None y confiamos en que la extensión lo hará.
-            return None;
-        }
-        // OLE2/CFB magic: D0CF11E0 → legacy binary
-        if bytes.len() >= 8 && bytes[..8] == [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1] {
-            // Legacy, pero no sabemos cuál sin extensión
-            return None;
-        }
-        None
     }
 
     pub fn extension(&self) -> &'static str {

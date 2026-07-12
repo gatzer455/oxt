@@ -1,5 +1,4 @@
 #![allow(unused_assignments, unused_variables)]
-#![allow(unused_assignments)]
 //! # Edit — modificar documentos in-place
 //!
 //! Abre un OOXML (DOCX/XLSX/PPTX) como ZIP, reemplaza texto
@@ -36,6 +35,44 @@ pub struct EditResult {
     pub replacements: usize,
     pub affected_parts: Vec<String>,
 }
+
+/// Reemplazar texto recursivamente en todo el OxtIR.
+pub(crate) fn replace_in_ir(ir: &mut crate::ir::OxtIR, old: &str, new: &str) -> usize {
+    let mut count = 0;
+    for section in &mut ir.sections {
+        for element in &mut section.elements {
+            match element {
+                crate::ir::Element::Heading { text, .. } => {
+                    count += text.matches(old).count();
+                    *text = text.replace(old, new);
+                }
+                crate::ir::Element::Paragraph { runs } => {
+                    for run in runs {
+                        count += run.text.matches(old).count();
+                        run.text = run.text.replace(old, new);
+                    }
+                }
+                crate::ir::Element::List { items, .. } => {
+                    for item in items {
+                        count += item.matches(old).count();
+                        *item = item.replace(old, new);
+                    }
+                }
+                crate::ir::Element::Table { rows } => {
+                    for row in rows {
+                        for cell in row {
+                            count += cell.matches(old).count();
+                            *cell = cell.replace(old, new);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    count
+}
+
 
 /// Reemplazar texto en un documento OOXML (DOCX/XLSX/PPTX).
 ///
@@ -89,48 +126,7 @@ pub fn replace_text(path: impl AsRef<Path>, old: &str, new: &str) -> Result<Edit
 
     eprintln!("DEBUG: IR sections={}, plain={:?}", ir.sections.len(), ir.plain_text().chars().take(100).collect::<String>());
 
-    // Reemplazar texto en el OxtIR (recorre sections → elements → runs)
-    fn replace_in_ir(ir: &mut crate::ir::OxtIR, old: &str, new: &str) -> usize {
-        let mut count = 0;
-        for section in &mut ir.sections {
-            for element in &mut section.elements {
-                match element {
-                    crate::ir::Element::Heading { text, .. } => {
-                        let before = text.clone();
-                        *text = text.replace(old, new);
-                        count += before.matches(old).count();
-                    }
-                    crate::ir::Element::Paragraph { runs } => {
-                        for run in runs {
-                            let before = run.text.clone();
-                            run.text = run.text.replace(old, new);
-                            count += before.matches(old).count();
-                        }
-                    }
-                    crate::ir::Element::List { items, .. } => {
-                        for item in items {
-                            let before = item.clone();
-                            *item = item.replace(old, new);
-                            count += before.matches(old).count();
-                        }
-                    }
-                    crate::ir::Element::Table { rows } => {
-                        for row in rows {
-                            for cell in row {
-                                let before = cell.clone();
-                                *cell = cell.replace(old, new);
-                                count += before.matches(old).count();
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        count
-    }
-
-    replacements = replace_in_ir(&mut ir, old, new);
+replacements = replace_in_ir(&mut ir, old, new);
 
     if replacements == 0 {
         return Ok(EditResult {
@@ -163,12 +159,6 @@ pub fn replace_text(path: impl AsRef<Path>, old: &str, new: &str) -> Result<Edit
 
 
 /// Cuenta ocurrencias de un substring.
-#[allow(dead_code)]
-fn count_occurrences(text: &str, pattern: &str) -> usize {
-    text.matches(pattern).count()
-}
-
-
 /// Editar un documento legacy leyéndolo a OxtIR, reemplazando texto,
 /// y escribiendo como OOXML (.doc → .docx, .xls → .xlsx, .ppt → .pptx).
 fn edit_legacy_via_ir(path: &Path, ext: &str, old: &str, new: &str) -> Result<EditResult> {
@@ -183,53 +173,6 @@ fn edit_legacy_via_ir(path: &Path, ext: &str, old: &str, new: &str) -> Result<Ed
     // Contar y reemplazar texto en todos los runs del IR
     let mut replacements = 0;
 
-    fn replace_in_ir(ir: &mut crate::ir::OxtIR, old: &str, new: &str) -> usize {
-        let mut count = 0;
-        for section in &mut ir.sections {
-            for element in &mut section.elements {
-                match element {
-                    crate::ir::Element::Heading { text, .. } => {
-                        let before = text.clone();
-                        *text = text.replace(old, new);
-                        if text != &before {
-                            count += before.matches(old).count();
-                        }
-                    }
-                    crate::ir::Element::Paragraph { runs } => {
-                        for run in runs {
-                            let before = run.text.clone();
-                            run.text = run.text.replace(old, new);
-                            if run.text != before {
-                                count += before.matches(old).count();
-                            }
-                        }
-                    }
-                    crate::ir::Element::List { items, .. } => {
-                        for item in items {
-                            let before = item.clone();
-                            *item = item.replace(old, new);
-                            if item != &before {
-                                count += before.matches(old).count();
-                            }
-                        }
-                    }
-                    crate::ir::Element::Table { rows } => {
-                        for row in rows {
-                            for cell in row {
-                                let before = cell.clone();
-                                *cell = cell.replace(old, new);
-                                if cell != &before {
-                                    count += before.matches(old).count();
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        count
-    }
 
     replacements = replace_in_ir(&mut ir, old, new);
 
@@ -269,13 +212,6 @@ mod tests {
     use std::io::Write;
 
     #[test]
-    fn test_count_occurrences() {
-        assert_eq!(count_occurrences("hello world hello", "hello"), 2);
-        assert_eq!(count_occurrences("hello", "world"), 0);
-        assert_eq!(count_occurrences("aaaa", "aa"), 2); // overlapping not counted
-    }
-
-    #[test]
     fn test_replace_text_in_docx() {
         use std::fs;
         use zip::write::SimpleFileOptions;
@@ -291,7 +227,7 @@ mod tests {
         let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
         // Content Types
-        zip.start_file("[Content_Types].xml", options.clone()).unwrap();
+        zip.start_file("[Content_Types].xml", options).unwrap();
         zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="xml" ContentType="application/xml"/>
@@ -299,14 +235,14 @@ mod tests {
 </Types>"#).unwrap();
 
         // Relationships
-        zip.start_file("_rels/.rels", options.clone()).unwrap();
+        zip.start_file("_rels/.rels", options).unwrap();
         zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>"#).unwrap();
 
         // Document
-        zip.start_file("word/document.xml", options.clone()).unwrap();
+        zip.start_file("word/document.xml", options).unwrap();
         zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:body>

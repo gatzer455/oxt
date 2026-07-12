@@ -47,22 +47,6 @@ impl ReadOutput {
     }
 }
 
-/// Resultado de una operación de escritura.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct WriteOutput {
-    pub path: String,
-    pub format: String,
-    pub bytes_written: u64,
-}
-
-/// Resultado de una operación de edición.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct EditOutput {
-    pub path: String,
-    pub replacements: usize,
-    pub cells_set: usize,
-}
-
 /// Descripción de un formato para el agente.
 pub const AGENT_SKILL: &str = r#"
 # Xi Office — herramientas para documentos de oficina

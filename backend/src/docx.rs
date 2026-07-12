@@ -163,7 +163,7 @@ impl DocxReader {
                             let lower = text.to_lowercase();
                             if lower.starts_with("heading") || lower.starts_with("encabezado") || lower.starts_with("título") {
                                 if let Some(n) = text.chars().last().and_then(|c| c.to_digit(10)) {
-                                    if n >= 1 && n <= 6 {
+                                    if (1..=6).contains(&n) {
                                         cs.heading_level = Some(n as u8);
                                     }
                                 }
@@ -529,12 +529,11 @@ impl DocxReader {
                             }
                             in_table_row = false;
                         }
-                        "tc" => {
-                            if in_table_cell {
+                        "tc"
+                            if in_table_cell => {
                                 table_row.push(cell_text.trim().to_string());
                                 in_table_cell = false;
                             }
-                        }
                         _ => {}
                     }
                 }
