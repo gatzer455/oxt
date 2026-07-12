@@ -1320,15 +1320,6 @@ pub fn download_drive_file(file_id: &str, output: &str) -> Result<()> {
 }
 
 /// URL-encode simple para parámetros de query.
-/// URL-encode para form-urlencoded (espacios como +).
-fn urlencode(s: &str) -> String {
-    s.chars().map(|c| match c {
-        'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | '-' | '.' | '~' => c.to_string(),
-        ' ' => "+".to_string(),
-        c => format!("%{:02X}", c as u8),
-    }).collect()
-}
-
 /// URL-encode para query params de API (espacios como %20).
 fn urlencoding(s: &str) -> String {
     s.chars().map(|c| match c {
