@@ -176,7 +176,7 @@ fn save_tokens(tokens: &GoogleTokens) -> Result<()> {
 /// Credenciales OAuth embebidas (Desktop app de GCP).
 /// Estándar en CLIs de escritorio — Google no trata client_secret como secreto en desktop apps.
 const DEFAULT_CLIENT_ID: &str = "327915843284-o2715l81t40re8568dineghb1t7kbqug.apps.googleusercontent.com";
-const DEFAULT_CLIENT_SECRET: &str = "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";
+const DEFAULT_CLIENT_SECRET: &str = "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";
 
 /// Iniciar flujo OAuth2: abre navegador, recibe redirect en localhost.
 ///
@@ -300,7 +300,12 @@ fn exchange_code_for_tokens(
 ) -> Result<GoogleTokens> {
     #[cfg(feature = "google")]
     {
-        let resp: serde_json::Value = ureq::post("https://oauth2.googleapis.com/token")
+        // Usar agente propio que no trata 4xx como error (para leer el body de Google)
+        let agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .new_agent();
+        let mut resp = agent.post("https://oauth2.googleapis.com/token")
             .send_form([
                 ("code", code),
                 ("client_id", client_id),
@@ -309,9 +314,19 @@ fn exchange_code_for_tokens(
                 ("grant_type", "authorization_code"),
                 ("code_verifier", code_verifier),
             ])
-            .map_err(|e| GoogleError::Http(e.to_string()))?
-            .body_mut().read_json::<serde_json::Value>()
-            .map_err(|e| GoogleError::Http(e.to_string()))?;
+            .map_err(|e| GoogleError::Http(format!("Transport: {e}")))?;
+
+        let body = resp.body_mut().read_to_vec()
+            .map_err(|e| GoogleError::Http(format!("Read: {e}")))?;
+        let body_str = String::from_utf8_lossy(&body);
+
+        if !resp.status().is_success() {
+            eprintln!("Token endpoint HTTP {}: {}", resp.status(), &body_str[..body_str.len().min(500)]);
+            return Err(GoogleError::AuthFailed(format!("HTTP {}: {}", resp.status(), &body_str[..body_str.len().min(200)])));
+        }
+
+        let resp: serde_json::Value = serde_json::from_str(&body_str)
+            .map_err(|e| GoogleError::Http(format!("JSON: {e} — {}", &body_str[..body_str.len().min(200)])))?;
 
         let access_token = resp.get("access_token")
             .and_then(|v| v.as_str())
@@ -323,6 +338,10 @@ fn exchange_code_for_tokens(
         let expires_in = resp.get("expires_in")
             .and_then(|v| v.as_i64())
             .unwrap_or(3600);
+
+        if let Some(s) = resp.get("scope").and_then(|v| v.as_str()) {
+            eprintln!("Scopes otorgados: {s}");
+        }
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -338,7 +357,7 @@ fn exchange_code_for_tokens(
         };
 
         save_tokens(&tokens)?;
-        println!("✅ Autenticación exitosa");
+        println!("Autenticación exitosa");
         Ok(tokens)
     }
 
@@ -1283,14 +1302,25 @@ pub fn list_drive_files(query: Option<&str>) -> Result<serde_json::Value> {
         url.push_str(&format!("&q={}", urlencoding(q)));
     }
 
-    let resp: serde_json::Value = ureq::get(&url)
+    let agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .build()
+        .new_agent();
+    let mut resp = agent.get(&url)
         .header("Authorization", &format!("Bearer {}", tokens.access_token))
         .call()
-        .map_err(|e| GoogleError::Http(e.to_string()))?
-        .body_mut().read_json::<serde_json::Value>()
-            .map_err(|e| GoogleError::Http(e.to_string()))?;
+        .map_err(|e| GoogleError::Http(format!("Transport: {e}")))?;
 
-    Ok(resp)
+    let body = resp.body_mut().read_to_vec()
+        .map_err(|e| GoogleError::Http(format!("Read: {e}")))?;
+    let body_str = String::from_utf8_lossy(&body);
+
+    if !resp.status().is_success() {
+        eprintln!("Drive API HTTP {}: {}", resp.status(), &body_str[..body_str.len().min(500)]);
+        return Err(GoogleError::Api(format!("HTTP {}: {}", resp.status(), &body_str[..body_str.len().min(200)])));
+    }
+
+    serde_json::from_str(&body_str).map_err(|e| GoogleError::Http(format!("JSON: {e}")))
 }
 
 /// Descargar un archivo de Google Drive.
