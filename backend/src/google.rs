@@ -19,6 +19,7 @@
 //! oxt google docs:create "Título"
 //! oxt google docs:update <document-id> --from ir.json
 //! ```
+#![cfg_attr(not(feature = "google"), allow(dead_code, unused_variables, unused_imports))]
 
 use crate::ir::Element;
 
@@ -1316,8 +1317,8 @@ pub fn download_drive_file(file_id: &str, output: &str) -> Result<()> {
     Ok(())
 }
 
-/// URL-encode simple para parámetros de query.
 /// URL-encode para query params de API (espacios como %20).
+#[cfg(feature = "google")]
 fn urlencoding(s: &str) -> String {
     s.chars().map(|c| match c {
         'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | '-' | '.' | '~' => c.to_string(),
@@ -1354,7 +1355,7 @@ mod tests {
 
     #[test]
     fn test_doc_to_ir_basic() {
-        let doc_json = serde_json::json!({
+        let _doc_json = serde_json::json!({
             "title": "Test Doc",
             "body": {
                 "content": [
@@ -1393,7 +1394,7 @@ mod tests {
 
         #[cfg(feature = "google")]
         {
-            let ir = doc_to_ir(&doc_json).unwrap();
+            let ir = doc_to_ir(&_doc_json).unwrap();
             assert_eq!(ir.sections.len(), 1);
             assert_eq!(ir.metadata.title.as_deref(), Some("Test Doc"));
             assert_eq!(ir.sections[0].elements.len(), 2);

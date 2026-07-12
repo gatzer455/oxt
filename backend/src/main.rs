@@ -180,6 +180,7 @@ enum Command {
 }
 
 fn handle_google(cmd: GoogleCommand) {
+    #[cfg(feature = "google")]
     macro_rules! format_ir {
         ($ir:expr, $format:expr) => {
             match $format.as_str() {

@@ -227,7 +227,7 @@ mod tests {
         let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
         // Content Types
-        zip.start_file("[Content_Types].xml", options.clone()).unwrap();
+        zip.start_file("[Content_Types].xml", options).unwrap();
         zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="xml" ContentType="application/xml"/>
@@ -235,14 +235,14 @@ mod tests {
 </Types>"#).unwrap();
 
         // Relationships
-        zip.start_file("_rels/.rels", options.clone()).unwrap();
+        zip.start_file("_rels/.rels", options).unwrap();
         zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>"#).unwrap();
 
         // Document
-        zip.start_file("word/document.xml", options.clone()).unwrap();
+        zip.start_file("word/document.xml", options).unwrap();
         zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:body>
