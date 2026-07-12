@@ -18,6 +18,7 @@ pub struct OxtIR {
 
 /// Metadatos del documento.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Default)]
 pub struct Metadata {
     pub title: Option<String>,
     pub subject: Option<String>,
@@ -26,17 +27,6 @@ pub struct Metadata {
     pub word_count: Option<u32>,
 }
 
-impl Default for Metadata {
-    fn default() -> Self {
-        Self {
-            title: None,
-            subject: None,
-            creator: None,
-            page_count: None,
-            word_count: None,
-        }
-    }
-}
 
 /// Una sección del documento.
 ///

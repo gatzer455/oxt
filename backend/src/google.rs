@@ -156,7 +156,7 @@ fn refresh_tokens(old: &GoogleTokens) -> Result<GoogleTokens> {
         };
 
         save_tokens(&tokens)?;
-        return Ok(tokens);
+        Ok(tokens)
     }
 
     #[cfg(not(feature = "google"))]
@@ -641,7 +641,7 @@ use crate::ir::Element;
     let mut text = String::new();
     for section in &ir.sections {
         if let Some(ref title) = section.title {
-            text.push_str(&title);
+            text.push_str(title);
             text.push('\n');
         }
         for element in &section.elements {
@@ -1277,9 +1277,7 @@ use crate::ir::Element;
 #[cfg(feature = "google")]
 pub fn list_drive_files(query: Option<&str>) -> Result<serde_json::Value> {
     let tokens = load_tokens()?;
-    let mut url = format!(
-        "https://www.googleapis.com/drive/v3/files?fields=files(id,name,mimeType,modifiedTime,size)"
-    );
+    let mut url = "https://www.googleapis.com/drive/v3/files?fields=files(id,name,mimeType,modifiedTime,size)".to_string();
     if let Some(q) = query {
         url.push_str(&format!("&q={}", urlencoding(q)));
     }
@@ -1312,7 +1310,7 @@ pub fn download_drive_file(file_id: &str, output: &str) -> Result<()> {
         .map_err(|e| GoogleError::Http(e.to_string()))?;
 
     std::fs::write(output, &body)
-        .map_err(|e| GoogleError::Io(e))?;
+        .map_err(GoogleError::Io)?;
 
     println!("Descargado: {} ({} bytes)", output, body.len());
     Ok(())
