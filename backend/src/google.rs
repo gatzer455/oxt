@@ -309,7 +309,12 @@ fn exchange_code_for_tokens(
         eprintln!("  -d 'grant_type=authorization_code' \\");
         eprintln!("  -d 'code_verifier={code_verifier}'");
 
-        let resp: serde_json::Value = match ureq::post("https://oauth2.googleapis.com/token")
+        // Usar agente propio que no trata 4xx como error (para leer el body de Google)
+        let agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .new_agent();
+        let mut resp = agent.post("https://oauth2.googleapis.com/token")
             .send_form([
                 ("code", code),
                 ("client_id", client_id),
@@ -317,22 +322,20 @@ fn exchange_code_for_tokens(
                 ("redirect_uri", redirect_uri),
                 ("grant_type", "authorization_code"),
                 ("code_verifier", code_verifier),
-            ]) {
-            Ok(mut resp) => {
-                if !resp.status().is_success() {
-                    let body = resp.body_mut().read_to_vec().unwrap_or_default();
-                    let body_str = String::from_utf8_lossy(&body);
-                    eprintln!("Token endpoint HTTP {}: {}", resp.status(), &body_str[..body_str.len().min(500)]);
-                    return Err(GoogleError::AuthFailed(format!("HTTP {}: {}", resp.status(), &body_str[..body_str.len().min(200)])));
-                }
-                resp.body_mut().read_json::<serde_json::Value>()
-                    .map_err(|e| GoogleError::Http(e.to_string()))?
-            }
-            Err(e) => {
-                eprintln!("Token exchange error: {e}");
-                return Err(GoogleError::Http(e.to_string()));
-            }
-        };
+            ])
+            .map_err(|e| GoogleError::Http(format!("Transport: {e}")))?;
+
+        let body = resp.body_mut().read_to_vec()
+            .map_err(|e| GoogleError::Http(format!("Read: {e}")))?;
+        let body_str = String::from_utf8_lossy(&body);
+
+        if !resp.status().is_success() {
+            eprintln!("Token endpoint HTTP {}: {}", resp.status(), &body_str[..body_str.len().min(500)]);
+            return Err(GoogleError::AuthFailed(format!("HTTP {}: {}", resp.status(), &body_str[..body_str.len().min(200)])));
+        }
+
+        let resp: serde_json::Value = serde_json::from_str(&body_str)
+            .map_err(|e| GoogleError::Http(format!("JSON: {e} — {}", &body_str[..body_str.len().min(200)])))?;
 
         let access_token = resp.get("access_token")
             .and_then(|v| v.as_str())
