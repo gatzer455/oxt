@@ -17,7 +17,9 @@
 pub mod agent;
 pub mod docx;
 pub mod ir;
+pub mod media;
 pub mod opc;
+pub mod origin;
 pub mod xlsx;
 pub mod create;
 pub mod edit;
@@ -100,6 +102,48 @@ fn try_open_primary(path: &std::path::Path, fmt: DocumentFormat) -> Result<OxtIR
             Ok(reader.into_ir())
         }
     }
+}
+
+/// Abrir un documento desde bytes en memoria (stdin).
+/// El formato se detecta por contenido (sniffing), no por extensión.
+pub fn open_from_bytes(bytes: &[u8]) -> Result<Document> {
+    let tmp = std::env::temp_dir().join(format!("oxt_stdin_{}.oxt", std::process::id()));
+    std::fs::write(&tmp, bytes)?;
+    let fmt = sniff_format(&tmp)?;
+    let ir = try_open_primary(&tmp, fmt)?;
+    let _ = std::fs::remove_file(&tmp);
+    Ok(Document {
+        format: fmt,
+        ir,
+        path: "-".into(),
+    })
+}
+
+/// Detectar el formato de un archivo por su contenido.
+fn sniff_format(path: &std::path::Path) -> Result<DocumentFormat> {
+    let head = std::fs::read(path).unwrap_or_default();
+    if head.starts_with(b"PK") {
+        // ZIP → OOXML/ODF: probar readers en orden
+        for f in [
+            DocumentFormat::Docx,
+            DocumentFormat::Xlsx,
+            DocumentFormat::Pptx,
+            DocumentFormat::Odt,
+            DocumentFormat::Ods,
+            DocumentFormat::Odp,
+        ] {
+            if try_open_primary(path, f).is_ok() {
+                return Ok(f);
+            }
+        }
+    } else if legacy::is_cfb(path) {
+        for f in [DocumentFormat::Doc, DocumentFormat::Xls, DocumentFormat::Ppt] {
+            if try_open_primary(path, f).is_ok() {
+                return Ok(f);
+            }
+        }
+    }
+    Err(Error::UnsupportedFormat("bytes de stdin".into()))
 }
 
 /// Un documento de oficina abierto (cualquier formato soportado).

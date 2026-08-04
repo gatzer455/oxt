@@ -64,6 +64,9 @@ pub struct GoogleTokens {
     pub expires_at: Option<i64>, // UNIX timestamp
     pub client_id: String,
     pub client_secret: String,
+    /// Token inyectado por env (`OXT_GOOGLE_TOKEN`): nunca se persiste.
+    #[serde(default, skip_serializing)]
+    pub ephemeral: bool,
 }
 
 /// Estado de autenticación.
@@ -94,7 +97,27 @@ fn tokens_path() -> PathBuf {
 }
 
 /// Cargar tokens guardados.
+///
+/// Si `OXT_GOOGLE_TOKEN` está en el entorno, se usa ese refresh token en
+/// memoria (nunca se escribe a disco) — auth headless para CI (contrato
+/// `docs/cli.md` §Auth).
 pub fn load_tokens() -> Result<GoogleTokens> {
+    // 1. Token de entorno (ephemeral)
+    if let Ok(env_token) = std::env::var("OXT_GOOGLE_TOKEN") {
+        if !env_token.is_empty() {
+            let tokens = GoogleTokens {
+                access_token: String::new(),
+                refresh_token: Some(env_token),
+                expires_at: Some(0), // fuerza refresh ahora
+                client_id: DEFAULT_CLIENT_ID.into(),
+                client_secret: DEFAULT_CLIENT_SECRET.into(),
+                ephemeral: true,
+            };
+            return refresh_tokens(&tokens);
+        }
+    }
+
+    // 2. Tokens guardados
     let path = tokens_path();
     if !path.exists() {
         return Err(GoogleError::AuthRequired);
@@ -115,6 +138,65 @@ pub fn load_tokens() -> Result<GoogleTokens> {
     }
 
     Ok(tokens)
+}
+
+/// Guardar un refresh token obtenido out-of-band (`oxt auth login --token`).
+/// Valida refrescando un access token antes de persistir.
+pub fn save_refresh_token(refresh: &str) -> Result<()> {
+    let tokens = GoogleTokens {
+        access_token: String::new(),
+        refresh_token: Some(refresh.to_string()),
+        expires_at: Some(0),
+        client_id: DEFAULT_CLIENT_ID.into(),
+        client_secret: DEFAULT_CLIENT_SECRET.into(),
+        ephemeral: false,
+    };
+    let tokens = refresh_tokens(&tokens)?;
+    save_tokens(&tokens)?;
+    Ok(())
+}
+
+/// Borrar los tokens guardados (`oxt auth logout`).
+pub fn logout() -> Result<()> {
+    let path = tokens_path();
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+    }
+    Ok(())
+}
+
+/// De dónde viene la autenticación actual: `env`, `file` o `none`.
+pub fn auth_source() -> &'static str {
+    if std::env::var("OXT_GOOGLE_TOKEN")
+        .map(|t| !t.is_empty())
+        .unwrap_or(false)
+    {
+        "env"
+    } else if tokens_path().exists() {
+        "file"
+    } else {
+        "none"
+    }
+}
+
+/// Metadatos de un archivo de Drive (`files.get`).
+/// Devuelve `(mimeType, name)`. Usado para resolver el kind de un ID desnudo.
+#[cfg(feature = "google")]
+pub fn get_file_metadata(file_id: &str) -> Result<(String, String)> {
+    let tokens = load_tokens()?;
+    let url = format!(
+        "https://www.googleapis.com/drive/v3/files/{file_id}?fields=mimeType,name"
+    );
+    let resp: serde_json::Value = ureq::get(&url)
+        .header("Authorization", &format!("Bearer {}", tokens.access_token))
+        .call()
+        .map_err(|e| GoogleError::Http(e.to_string()))?
+        .body_mut()
+        .read_json::<serde_json::Value>()
+        .map_err(|e| GoogleError::Http(e.to_string()))?;
+    let mime = resp.get("mimeType").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let name = resp.get("name").and_then(|v| v.as_str()).unwrap_or(file_id).to_string();
+    Ok((mime, name))
 }
 
 /// Refrescar token de acceso usando refresh_token.
@@ -154,9 +236,12 @@ fn refresh_tokens(old: &GoogleTokens) -> Result<GoogleTokens> {
             expires_at: Some(now + expires_in),
             client_id: old.client_id.clone(),
             client_secret: old.client_secret.clone(),
+            ephemeral: old.ephemeral,
         };
 
-        save_tokens(&tokens)?;
+        if !tokens.ephemeral {
+            save_tokens(&tokens)?;
+        }
         Ok(tokens)
     }
 
@@ -365,6 +450,7 @@ fn exchange_code_for_tokens(
             expires_at: Some(now + expires_in),
             client_id: client_id.to_string(),
             client_secret: client_secret.to_string(),
+            ephemeral: false,
         };
 
         save_tokens(&tokens)?;
@@ -1467,4 +1553,136 @@ mod tests {
             assert_eq!(heading_level_from_style("HEADING_1"), Some(1));
         }
     }
+}
+
+// ── Media (imágenes de documentos Google) ─────────────────────────────────────
+
+/// Una imagen extraída de un documento de Google.
+/// `data: None` = la URL no resolvió (expirada, sin permiso).
+#[cfg(feature = "google")]
+#[derive(Debug, Clone)]
+pub struct GoogleImage {
+    pub filename: String,
+    pub data: Option<Vec<u8>>,
+    pub alt_text: Option<String>,
+}
+
+/// Nombre de archivo desde una URL de googleusercontent (o fallback indexado).
+#[cfg(feature = "google")]
+fn filename_from_uri(uri: &str, idx: usize) -> String {
+    let base = uri.split('?').next().unwrap_or(uri);
+    let name = base.rsplit('/').next().unwrap_or("").to_string();
+    if !name.is_empty() && name.contains('.') {
+        name
+    } else {
+        format!("image{idx}.png")
+    }
+}
+
+#[cfg(feature = "google")]
+fn fetch_url(url: &str) -> Result<Vec<u8>> {
+    ureq::get(url)
+        .call()
+        .map_err(|e| GoogleError::Http(e.to_string()))?
+        .body_mut()
+        .read_to_vec()
+        .map_err(|e| GoogleError::Http(e.to_string()))
+}
+
+/// Extraer las imágenes de un Google Doc (inlineObjects → sourceUri/contentUri).
+/// Las URLs que fallan (expiradas, sin permiso) entran con `data: None`.
+#[cfg(feature = "google")]
+pub fn fetch_doc_images(document_id: &str) -> Result<Vec<GoogleImage>> {
+    let tokens = load_tokens()?;
+    let url = format!("https://docs.googleapis.com/v1/documents/{document_id}");
+    let resp: serde_json::Value = ureq::get(&url)
+        .header("Authorization", &format!("Bearer {}", tokens.access_token))
+        .call()
+        .map_err(|e| GoogleError::Http(e.to_string()))?
+        .body_mut()
+        .read_json::<serde_json::Value>()
+        .map_err(|e| GoogleError::Http(e.to_string()))?;
+
+    let mut out = Vec::new();
+    let mut idx = 0usize;
+    if let Some(inline) = resp.get("inlineObjects").and_then(|v| v.as_object()) {
+        for obj in inline.values() {
+            let image = obj
+                .get("inlineObjectProperties")
+                .and_then(|p| p.get("imageProperties"));
+            let uri = image
+                .and_then(|i| i.get("sourceUri"))
+                .and_then(|v| v.as_str())
+                .or_else(|| obj.get("contentUri").and_then(|v| v.as_str()));
+            let Some(uri) = uri else { continue };
+            let alt = image
+                .and_then(|i| i.get("altText"))
+                .and_then(|v| v.as_str())
+                .or_else(|| image.and_then(|i| i.get("title")).and_then(|v| v.as_str()))
+                .map(|s| s.to_string());
+            match fetch_url(uri) {
+                Ok(data) => {
+                    out.push(GoogleImage {
+                        filename: filename_from_uri(uri, idx),
+                        data: Some(data),
+                        alt_text: alt,
+                    });
+                }
+                Err(_) => out.push(GoogleImage {
+                    filename: filename_from_uri(uri, idx),
+                    data: None,
+                    alt_text: alt,
+                }),
+            }
+            idx += 1;
+        }
+    }
+    Ok(out)
+}
+
+/// Extraer las imágenes de una presentación de Slides (pageElements → image.contentUrl).
+#[cfg(feature = "google")]
+pub fn fetch_slides_images(presentation_id: &str) -> Result<Vec<GoogleImage>> {
+    let tokens = load_tokens()?;
+    let url = format!(
+        "https://slides.googleapis.com/v1/presentations/{presentation_id}"
+    );
+    let resp: serde_json::Value = ureq::get(&url)
+        .header("Authorization", &format!("Bearer {}", tokens.access_token))
+        .call()
+        .map_err(|e| GoogleError::Http(e.to_string()))?
+        .body_mut()
+        .read_json::<serde_json::Value>()
+        .map_err(|e| GoogleError::Http(e.to_string()))?;
+
+    let mut out = Vec::new();
+    let mut idx = 0usize;
+    if let Some(pages) = resp.get("slides").and_then(|v| v.as_array()) {
+        for page in pages {
+            if let Some(elems) = page.get("pageElements").and_then(|v| v.as_array()) {
+                for el in elems {
+                    let image = el.get("image");
+                    let uri = image
+                        .and_then(|i| i.get("contentUrl"))
+                        .and_then(|v| v.as_str())
+                        .or_else(|| image.and_then(|i| i.get("sourceUri")).and_then(|v| v.as_str()));
+                    let Some(uri) = uri else { continue };
+                    match fetch_url(uri) {
+                        Ok(data) => out.push(GoogleImage {
+                            filename: filename_from_uri(uri, idx),
+                            data: Some(data),
+                            alt_text: None,
+                        }),
+                        Err(_) => out.push(GoogleImage {
+                            filename: filename_from_uri(uri, idx),
+                            data: None,
+                            alt_text: None,
+                        }),
+                    }
+                    idx += 1;
+                }
+            }
+        }
+    }
+    Ok(out)
 }

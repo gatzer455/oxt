@@ -71,7 +71,12 @@ impl DocxReader {
 
         // Parsear document.xml
         let body_xml = pkg.read_string("word/document.xml")?;
-        let elements = Self::parse_body(&body_xml, &styles, &numbering)?;
+        let rels = pkg.part_rels("word/document.xml")?;
+        let rel_map: HashMap<String, String> = rels
+            .iter()
+            .map(|r| (r.id.clone(), r.target.clone()))
+            .collect();
+        let elements = Self::parse_body(pkg, &body_xml, &styles, &numbering, &rel_map)?;
 
         let ir = OxtIR {
             metadata: Metadata::default(),
@@ -282,10 +287,13 @@ impl DocxReader {
 
     // ── Body parser ────────────────────────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     fn parse_body(
+        pkg: &mut OpcPackage<std::fs::File>,
         xml: &str,
         styles: &HashMap<String, StyleEntry>,
         _numbering: &HashMap<u32, bool>,
+        rel_map: &HashMap<String, String>,
     ) -> Result<Vec<Element>> {
         let mut reader = XmlReader::from_str(xml);
         reader.config_mut().expand_empty_elements = true;
@@ -303,6 +311,9 @@ impl DocxReader {
         let mut in_break = false;
         let mut in_pstyle = false;
         let mut in_rpr = false;
+        let mut in_drawing = false;
+        let mut pending_image: Option<(String, Option<String>)> = None;
+        let mut pending_alt: Option<String> = None;
 
         let mut current_runs: Vec<Run> = Vec::new();
         let mut current_run: Option<Run> = None;
@@ -348,6 +359,24 @@ impl DocxReader {
                             link_id = e.try_get_attribute("r:id").ok().flatten()
                                 .or_else(|| e.try_get_attribute("id").ok().flatten())
                                 .map(|a| String::from_utf8_lossy(&a.value).to_string());
+                        }
+                        "drawing" if in_run => in_drawing = true,
+                        "docPr" if in_drawing => {
+                            // Nombre/descripción de la imagen (alt text)
+                            let alt = e.try_get_attribute("descr").ok().flatten()
+                                .or_else(|| e.try_get_attribute("name").ok().flatten())
+                                .map(|a| String::from_utf8_lossy(&a.value).to_string());
+                            if let Some(alt) = alt {
+                                pending_alt = Some(alt);
+                            }
+                        }
+                        "blip" if in_drawing => {
+                            let rid = e.try_get_attribute("r:embed").ok().flatten()
+                                .or_else(|| e.try_get_attribute("embed").ok().flatten())
+                                .map(|a| String::from_utf8_lossy(&a.value).to_string());
+                            if let Some(rid) = rid {
+                                pending_image = Some((rid, pending_alt.take()));
+                            }
                         }
                         "b" if in_rpr => {
                             if let Some(ref mut run) = current_run {
@@ -427,6 +456,14 @@ impl DocxReader {
                     let tag = local_name(&name_data);
                     match tag {
                         "br" if in_run => in_break = true,
+                        "blip" if in_drawing => {
+                            let rid = e.try_get_attribute("r:embed").ok().flatten()
+                                .or_else(|| e.try_get_attribute("embed").ok().flatten())
+                                .map(|a| String::from_utf8_lossy(&a.value).to_string());
+                            if let Some(rid) = rid {
+                                pending_image = Some((rid, pending_alt.take()));
+                            }
+                        }
                         "b" if in_rpr => {
                             if let Some(ref mut run) = current_run {
                                 run.bold = Some(true);
@@ -488,7 +525,6 @@ impl DocxReader {
                                                 .join("");
                                             elements.push(Element::Heading { level, text });
                                             current_runs = Vec::new();
-                                            break;
                                         }
                                     }
                                 }
@@ -497,6 +533,32 @@ impl DocxReader {
                                 if !current_runs.is_empty() {
                                     elements.push(Element::Paragraph { runs: current_runs.clone() });
                                     current_runs = Vec::new();
+                                }
+
+                                // Imagen dentro del párrafo (w:drawing → r:embed)
+                                if let Some((rid, alt)) = pending_image.take() {
+                                    if let Some(target) = rel_map.get(&rid) {
+                                        let full = if target.starts_with('/') {
+                                            target.trim_start_matches('/').to_string()
+                                        } else {
+                                            format!("word/{target}")
+                                        };
+                                        if let Ok(bytes) = pkg.read_bytes(&full) {
+                                            use base64::Engine;
+                                            let data = base64::engine::general_purpose::STANDARD
+                                                .encode(&bytes);
+                                            let filename = full
+                                                .rsplit('/')
+                                                .next()
+                                                .unwrap_or("image")
+                                                .to_string();
+                                            elements.push(Element::Image {
+                                                filename,
+                                                data,
+                                                alt_text: alt,
+                                            });
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -516,6 +578,7 @@ impl DocxReader {
                         }
                         "rPr" => in_rpr = false,
                         "t" => in_text = false,
+                        "drawing" => in_drawing = false,
                         "hyperlink" => in_hyperlink = false,
                         "tbl" => {
                             if !table_rows.is_empty() {
@@ -630,5 +693,63 @@ mod tests {
             heading_level: None,
         });
         assert_eq!(resolve_heading_level(&styles, "Titulo1"), Some(1));
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+    use base64::Engine;
+    use std::io::Write;
+
+    fn write_docx_with_image(path: &std::path::Path) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let opts = zip::write::SimpleFileOptions::default();
+        let png = [0x89u8, 0x50, 0x4E, 0x47];
+
+        zip.start_file("[Content_Types].xml", opts).unwrap();
+        zip.write_all(br#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="png" ContentType="image/png"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#).unwrap();
+        zip.start_file("_rels/.rels", opts).unwrap();
+        zip.write_all(br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#).unwrap();
+        zip.start_file("word/_rels/document.xml.rels", opts).unwrap();
+        zip.write_all(br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/foto1.png"/></Relationships>"#).unwrap();
+        zip.start_file("word/document.xml", opts).unwrap();
+        zip.write_all(br#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:body><w:p><w:r><w:t>Texto antes</w:t></w:r></w:p><w:p><w:r><w:drawing><wp:inline><wp:docPr id="1" name="Foto 1" descr="una foto"/><a:graphic><a:graphicData><pic:pic><pic:blipFill><a:blip r:embed="rId5"/></pic:blipFill></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p><w:p><w:r><w:t>Texto despues</w:t></w:r></w:p></w:body></w:document>"#).unwrap();
+        zip.start_file("word/media/foto1.png", opts).unwrap();
+        zip.write_all(&png).unwrap();
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn test_docx_reader_extracts_image() {
+        let dir = std::env::temp_dir().join("oxt_docx_img");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("img.docx");
+        write_docx_with_image(&path);
+
+        let reader = DocxReader::open(&path).unwrap();
+        let ir = reader.into_ir();
+        let kinds: Vec<&str> = ir.sections[0]
+            .elements
+            .iter()
+            .map(|e| match e {
+                Element::Image { .. } => "image",
+                Element::Paragraph { .. } => "paragraph",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, vec!["paragraph", "image", "paragraph"], "elementos: {kinds:?}");
+        let img = &ir.sections[0].elements[1];
+        if let Element::Image { filename, data, alt_text } = img {
+            assert_eq!(filename, "foto1.png");
+            assert_eq!(alt_text.as_deref(), Some("una foto"));
+            let decoded = base64::engine::general_purpose::STANDARD.decode(data).unwrap();
+            assert_eq!(decoded, [0x89, 0x50, 0x4E, 0x47]);
+        } else {
+            panic!("esperaba Image");
+        }
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

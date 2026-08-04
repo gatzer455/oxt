@@ -47,56 +47,49 @@ impl ReadOutput {
     }
 }
 
-/// Descripción de un formato para el agente.
-pub const AGENT_SKILL: &str = r#"
-# Xi Office — herramientas para documentos de oficina
+/// Descripción de la CLI para el agente (contrato v1, ver docs/cli.md).
+pub const AGENT_SKILL: &str = r#"# oxt — documentos de oficina para LLMs
 
-## Comandos disponibles
+Un verbo, cualquier origen: cada comando acepta un path local, una URL de Google (`https://docs.google.com/document/d/ID/edit`) o un ID de Google. `-` = stdin.
 
-### oxt read <archivo> [--format text|markdown|ir|offset-map]
-Lee un documento y lo muestra en el formato indicado.
-- text: texto plano (formato perdido)
-- markdown: markdown con formato básico (default)
-- ir: JSON estructurado (ideal para manipulación por LLM)
-- offset-map: texto + mapa de rutas para ediciones precisas
+## Comandos
 
-### oxt edit <archivo> <viejo> <nuevo>
-Reemplaza texto en un documento. Usa el TextOffsetMap
-para localizar las ocurrencias.
+- `oxt read <origen> [--format text|markdown|ir|offset-map] [--json]` — leer. Default markdown.
+- `oxt info <origen> [--json]` — formato, secciones, elementos, título.
+- `oxt stats <origen> [--per-section] [--json]` — métricas (palabras, tablas, imágenes…).
+- `oxt grep <patrón> <origen> [--literal] [-i] [--json]` — regex; matches con offset y ruta IR. Exit 1 si no hay matches.
+- `oxt diff <a> <b> [--json]` — compara dos documentos (cualquier formato). Exit 1 si hay diferencias.
+- `oxt edit <origen> --old "x" --new "y" [--json]` — reemplazo in-place (preserva estilos). `changed: false` si no hubo reemplazos.
+- `oxt update <origen> --from ir.json|- [--json]` — reemplaza TODO el contenido con un IR.
+- `oxt convert <origen> <destino> [--json]` — convierte entre formatos (destino local).
+- `oxt create <path> --from ir.json|- [--json]` — crea local; `oxt create --doc|--sheet|--slides "Título" [--from -]` — crea en Google.
+- `oxt media <origen> --output dir [--json]` — extrae imágenes (base64 del IR o sourceUri de Google).
+- `oxt list [--query] [--json]` / `oxt download <id|url> --output <path> [--json]` — Google Drive.
+- `oxt schema` — JSON con toda la CLI (comandos, flags, errores, exit codes).
+- `oxt auth login|logout|status` — Google OAuth; CI: env `OXT_GOOGLE_TOKEN` o `auth login --token`.
 
-### oxt create <archivo> --from <ir.json>
-Crea un documento desde un archivo JSON con la estructura del IR.
+## Contrato de salida
 
-### oxt info <archivo>
-Muestra metadatos: formato, páginas, secciones, elementos.
+- `--json` → JSON en stdout (stdout solo datos). Texto por defecto.
+- Errores: JSON en stderr, última línea: `{"kind": ..., "message": ...}`. Exit codes: 2 usage, 3 io, 4 formato, 5 IR inválido, 6 auth, 7 api, 8 edit, 10 interno.
+- Outcomes (exit ≠ 0 sin error): grep sin matches, diff con diferencias, auth status sin sesión → 1.
+- Formatos: docx/xlsx/pptx/odt/ods/odp/doc/xls/ppt (legacy: lectura y conversión, edición convierte a OOXML).
 
 ## Formato del IR (JSON)
 
-El IR (Intermediate Representation) es un JSON con esta estructura:
 ```json
 {
   "sections": [{
-    "title": "Nombre de sección",
+    "title": "Nombre",
     "elements": [
-      { "kind": "heading", "level": 1, "text": "Título" },
-      { "kind": "paragraph", "runs": [{ "text": "texto", "bold": true }] },
-      { "kind": "table", "rows": [["A1", "B1"], ["A2", "B2"]] },
-      { "kind": "list", "ordered": false, "items": ["item1", "item2"] }
+      {"kind": "heading", "level": 1, "text": "Título"},
+      {"kind": "paragraph", "runs": [{"text": "texto", "bold": true}]},
+      {"kind": "table", "rows": [["A1", "B1"]]},
+      {"kind": "list", "ordered": false, "items": ["item"]},
+      {"kind": "image", "filename": "foto.png", "data": "<base64>", "alt_text": "..."}
     ]
   }]
 }
 ```
 
-## TextOffsetMap
-
-Para ediciones precisas, se genera un mapa que asocia
-cada span de texto con su ruta en el documento:
-```json
-{
-  "full_text": "Texto completo del documento...",
-  "spans": [
-    { "start": 0, "end": 5, "path": "/s[0]/p[0]/r[0]", "text": "Texto" }
-  ]
-}
-```
-"#;
+Los paths IR (`/s[0]/p[1]/r[2]`) que devuelven `grep`/`diff`/`offset-map` localizan cada texto con precisión."#;

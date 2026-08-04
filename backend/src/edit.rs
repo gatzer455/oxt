@@ -36,8 +36,17 @@ pub struct EditResult {
     pub affected_parts: Vec<String>,
 }
 
+/// Resultado de `oxt update`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UpdateResult {
+    pub path: String,
+    pub format: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub converted_from: Option<String>,
+}
+
 /// Reemplazar texto recursivamente en todo el OxtIR.
-pub(crate) fn replace_in_ir(ir: &mut crate::ir::OxtIR, old: &str, new: &str) -> usize {
+pub fn replace_in_ir(ir: &mut crate::ir::OxtIR, old: &str, new: &str) -> usize {
     let mut count = 0;
     for section in &mut ir.sections {
         for element in &mut section.elements {
@@ -73,6 +82,58 @@ pub(crate) fn replace_in_ir(ir: &mut crate::ir::OxtIR, old: &str, new: &str) -> 
     count
 }
 
+
+/// Reemplazar el contenido completo de un documento con un OxtIR (`oxt update`).
+///
+/// - OOXML/ODF: preservation bag (solo se regeneran las partes principales).
+/// - Legacy: convierte a OOXML (cambia la extensión), igual que `edit`.
+pub fn update_from_ir(path: impl AsRef<Path>, ir: &crate::ir::OxtIR) -> Result<UpdateResult> {
+    let path = path.as_ref();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+
+    match ext.as_str() {
+        "docx" | "xlsx" | "pptx" | "odt" | "ods" | "odp" => {
+            let doc = crate::roundtrip::RoundtripDoc::open(path)
+                .map_err(|e| EditError::Other(format!("Error al abrir: {e}")))?;
+            let modified = crate::roundtrip::RoundtripDoc {
+                ir: ir.clone(),
+                format: doc.format,
+                path: doc.path,
+                parts: doc.parts,
+                regenerated_indices: doc.regenerated_indices,
+            };
+            modified
+                .save(path)
+                .map_err(|e| EditError::Other(format!("Error al guardar: {e}")))?;
+            Ok(UpdateResult {
+                path: path.to_string_lossy().to_string(),
+                format: ext,
+                converted_from: None,
+            })
+        }
+        "doc" | "xls" | "ppt" => {
+            let out_ext = match ext.as_str() {
+                "doc" => "docx",
+                "xls" => "xlsx",
+                "ppt" => "pptx",
+                _ => unreachable!(),
+            };
+            let out_path = path.with_extension(out_ext);
+            crate::create::create_from_ir(&out_path, ir)
+                .map_err(|e| EditError::Other(format!("Error al escribir {out_ext}: {e}")))?;
+            Ok(UpdateResult {
+                path: out_path.to_string_lossy().to_string(),
+                format: out_ext.into(),
+                converted_from: Some(ext),
+            })
+        }
+        _ => Err(EditError::UnsupportedFormat(ext)),
+    }
+}
 
 /// Reemplazar texto en un documento OOXML (DOCX/XLSX/PPTX).
 ///
