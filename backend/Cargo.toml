@@ -10,7 +10,7 @@ name = "oxt"
 path = "src/main.rs"
 
 [dependencies]
-zip = "2"
+zip = "9"
 quick-xml = "0.37"
 cfb = "0.10"
 clap = { version = "4", features = ["derive"] }
